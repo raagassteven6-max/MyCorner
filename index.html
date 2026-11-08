@@ -210,7 +210,7 @@ const DEFAULT_PROVIDERS = [{
 const S = {
   settings: { apiKey: "", autoNext: true, resume: true, ...store.get("settings", {}) },
   providers: store.get("providers", DEFAULT_PROVIDERS),
-  catalog: store.get("catalog", {}),     // providerId -> { videos, playlists, syncedAt }
+  catalog: {},                           // providerId -> { videos, playlists, syncedAt }. Lives in IndexedDB; loaded by initStorage()
   overrides: store.get("overrides", {}), // videoId -> manual corrections (preserved across syncs)
   ignoredPl: store.get("ignoredPl", {}), // playlistId -> true/false (manual playlist include/exclude)
   watchlist: store.get("watchlist", []), // anime ids
@@ -220,7 +220,57 @@ const S = {
   snapshotAt: 0,                         // when the published catalog.json was exported (0 = using this browser's own catalog)
   syncLog: []
 };
-const save = k => store.set(k, S[k]);
+/* The catalog can be large, so it lives in IndexedDB (hundreds of MB available) instead of localStorage (about 5 MB).
+   Small personal data stays in localStorage. If IndexedDB is unavailable (some private modes), the catalog falls back to localStorage. */
+const idb = {
+  db: null,
+  open() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open("mycorner", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("kv");
+      req.onsuccess = () => { idb.db = req.result; resolve(); };
+      req.onerror = () => reject(req.error);
+      req.onblocked = () => reject(new Error("blocked"));
+    });
+  },
+  run(mode, fn) { // resolves only after the transaction has fully committed
+    return new Promise((resolve, reject) => {
+      const tx = idb.db.transaction("kv", mode); let out;
+      const r = fn(tx.objectStore("kv")); if (r) r.onsuccess = () => { out = r.result; };
+      tx.oncomplete = () => resolve(out);
+      tx.onerror = tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction failed"));
+    });
+  },
+  get: k => idb.run("readonly", st => st.get(k)),
+  set: (k, v) => idb.run("readwrite", st => st.put(v, k)),
+  wipe() {
+    return new Promise(done => {
+      try { idb.db?.close(); const r = indexedDB.deleteDatabase("mycorner"); r.onsuccess = r.onerror = r.onblocked = () => done(); }
+      catch { done(); }
+    });
+  }
+};
+let idbOk = false, writeQueued = false, idbChain = Promise.resolve();
+function saveCatalog() {
+  if (!idbOk) return store.set("catalog", S.catalog);
+  if (writeQueued) return;  // a write that has not started yet will already pick up the latest data
+  writeQueued = true;
+  idbChain = idbChain.then(() => { writeQueued = false; return idb.set("catalog", S.catalog); })
+    .catch(() => toast("The catalog could not be saved in this browser.\nIt still works until you close this page. Free some disk space, then sync again."));
+}
+const save = k => k === "catalog" ? saveCatalog() : store.set(k, S[k]);
+async function initStorage() {
+  try { await idb.open(); idbOk = true; } catch { idbOk = false; }
+  if (!idbOk) { S.catalog = store.get("catalog", {}); return; }
+  try {
+    let c = await idb.get("catalog");
+    const legacy = store.get("catalog", null);
+    if (!c && legacy) { await idb.set("catalog", legacy); c = legacy; } // one-time move from localStorage, committed before anything is removed
+    if (legacy) { try { localStorage.removeItem("mc.catalog"); } catch { /* ignore */ } }
+    S.catalog = c || {};
+  } catch { idbOk = false; S.catalog = store.get("catalog", {}); }
+  invalidate();
+}
 let libCache = null;
 const invalidate = () => { libCache = null; };
 
@@ -986,7 +1036,7 @@ document.addEventListener("click", async e => {
   else if (act === "export") {
     downloadJson({ watchlist: S.watchlist, history: S.history, overrides: S.overrides, links: S.links, settings: { ...S.settings, apiKey: "" } }, "mycorner-backup.json", true);
   } else if (act === "clearcache") { if (confirm("Remove the saved catalog? You will need to sync again. Your watchlist and history are kept.")) { S.catalog = {}; S.providers.forEach(p => p.lastSync = 0); save("catalog"); save("providers"); invalidate(); toast("Catalog cache cleared."); } }
-  else if (act === "clearall") { if (confirm("Erase ALL MyCorner data on this browser, including your API key?")) { Object.keys(localStorage).filter(k => k.startsWith("mc.")).forEach(k => localStorage.removeItem(k)); location.hash = "#/"; location.reload(); } }
+  else if (act === "clearall") { if (confirm("Erase ALL MyCorner data on this browser, including your API key?")) { Object.keys(localStorage).filter(k => k.startsWith("mc.")).forEach(k => localStorage.removeItem(k)); await idb.wipe(); location.hash = "#/"; location.reload(); } }
 });
 document.addEventListener("change", e => {
   const el = e.target.closest("[data-act]"); if (!el) return; const { act, id, k } = el.dataset;
@@ -1035,9 +1085,11 @@ $("#dlg").addEventListener("close", () => {
   }
 });
 
-loadingSnap = location.protocol.startsWith("http") && !hasLocalCatalog();
-route();
-if (loadingSnap) loadSnapshot();
+loadingSnap = true; route(); // shows "Loading the catalog..." until storage is ready
+initStorage().then(() => {
+  loadingSnap = location.protocol.startsWith("http") && !hasLocalCatalog(); // no local catalog: try the published catalog.json
+  if (loadingSnap) loadSnapshot(); else route();
+});
 </script>
 </body>
 </html>
