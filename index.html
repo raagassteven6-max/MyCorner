@@ -216,6 +216,8 @@ const S = {
   watchlist: store.get("watchlist", []), // anime ids
   history: store.get("history", {}),     // videoId -> { pos, dur, at, anime }
   blocked: store.get("blocked", {}),     // videoId -> YouTube error code seen in the player
+  links: store.get("links", {}),         // animeId -> [animeId on other providers] (manual "same show" links)
+  snapshotAt: 0,                         // when the published catalog.json was exported (0 = using this browser's own catalog)
   syncLog: []
 };
 const save = k => store.set(k, S[k]);
@@ -473,6 +475,139 @@ function buildLibrary() {
 }
 const enabledAnime = () => buildLibrary().anime.filter(a => S.providers.find(p => p.id === a.providerId)?.enabled);
 
+/* ---------- 5b. Provider management, cross-provider links, catalog snapshots ---------- */
+const isAdmin = () => !!S.settings.apiKey; // visitors have no key, so management tools stay hidden for them
+const badKey = k => k === "__proto__" || k === "constructor" || k === "prototype";
+/* Accepts a channel link, a handle (@name or name) or a channel ID (UC...). Returns { channelId, handle } or null. */
+function parseChannelRef(raw) {
+  const r = String(raw || "").trim(); if (!r) return null;
+  let m = r.match(/youtube\.com\/channel\/(UC[\w-]{20,})/i) || r.match(/^(UC[\w-]{20,})$/);
+  if (m) return { channelId: m[1], handle: "" };
+  m = r.match(/youtube\.com\/(@[\w.\-]+)/i) || r.match(/^@?([\w.\-]{3,})$/);
+  if (m) return { channelId: "", handle: m[1].startsWith("@") ? m[1] : "@" + m[1] };
+  return null;
+}
+const sameHandle = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+const refChanged = (p, ref) => ref.channelId ? ref.channelId !== p.channelId : !sameHandle(ref.handle, p.handle);
+const duplicateProvider = (ref, except) => S.providers.find(x => x !== except &&
+  ((ref.channelId && x.channelId === ref.channelId) || sameHandle(ref.handle, x.handle)));
+/* Renaming keeps the provider id, so watchlist entries survive. Pointing at a different channel clears the old catalog. */
+function applyProviderEdit(p, name, ref) {
+  p.name = name;
+  if (!refChanged(p, ref)) return false;
+  Object.assign(p, { handle: ref.handle, channelId: ref.channelId, uploadsId: "", logo: "", lastSync: 0 });
+  delete S.catalog[p.id];
+  return true;
+}
+function removeProvider(id) {
+  const mine = x => x.startsWith(id + ":");
+  S.providers = S.providers.filter(p => p.id !== id);
+  delete S.catalog[id];
+  S.watchlist = S.watchlist.filter(x => !mine(x));
+  for (const k of Object.keys(S.links)) {
+    if (mine(k)) { delete S.links[k]; continue; }
+    S.links[k] = S.links[k].filter(x => !mine(x));
+    if (!S.links[k].length) delete S.links[k];
+  }
+  ["providers", "catalog", "watchlist", "links"].forEach(save);
+  invalidate();
+}
+
+/* Same show on another provider: shown as a link, never merged (catalogs stay separate). */
+const normKey = t => String(t).toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "");
+function relatedAnime(a) {
+  const lib = buildLibrary(), out = new Map(), k = normKey(a.title);
+  const ok = x => x && x.id !== a.id && S.providers.find(p => p.id === x.providerId)?.enabled;
+  if (k) for (const x of lib.anime) if (x.providerId !== a.providerId && normKey(x.title) === k && ok(x)) out.set(x.id, x);
+  for (const id of S.links[a.id] || []) { const x = lib.byId.get(id); if (ok(x)) out.set(x.id, x); }
+  return [...out.values()];
+}
+function linkAnime(aId, bId, on = true) {
+  for (const [x, y] of [[aId, bId], [bId, aId]]) {
+    const set = new Set(S.links[x] || []); on ? set.add(y) : set.delete(y);
+    if (set.size) S.links[x] = [...set]; else delete S.links[x];
+  }
+  save("links");
+}
+
+/* Published catalog: you export catalog.json, put it next to this page, and visitors load it without an API key.
+   It only contains public YouTube information. Everything read from it is validated, because it is just a file. */
+const VID_RE = /^[\w-]{11}$/;
+const safeImg = u => typeof u === "string" && /^https:\/\/[\w.-]+\.(ytimg|ggpht|googleusercontent)\.com\//.test(u) ? u : "";
+const str = (v, n) => typeof v === "string" ? v.slice(0, n) : "";
+function buildSnapshot() {
+  const catalog = {};
+  for (const p of S.providers) {
+    const c = S.catalog[p.id]; if (!c) continue;
+    const videos = {};
+    for (const [id, v] of Object.entries(c.videos)) { const { at, ...rest } = v; videos[id] = { ...rest, d: (v.d || "").slice(0, 300) }; }
+    catalog[p.id] = { videos, playlists: c.playlists, syncedAt: c.syncedAt, olderToken: c.olderToken || "", complete: !!c.complete, missing: c.missing || {} };
+  }
+  return {
+    format: "mycorner-catalog", version: 1, exportedAt: Date.now(),
+    providers: S.providers.map(({ id, name, handle, channelId, uploadsId, logo, enabled, lastSync }) => ({ id, name, handle, channelId, uploadsId, logo, enabled, lastSync })),
+    catalog, overrides: S.overrides, ignoredPl: S.ignoredPl, links: S.links
+  };
+}
+function cleanSnapshot(snap) {
+  if (!snap || snap.format !== "mycorner-catalog" || snap.version !== 1 || !Array.isArray(snap.providers) || !snap.catalog || typeof snap.catalog !== "object") return null;
+  const providers = [], catalog = {};
+  for (const p of snap.providers) {
+    if (!p || typeof p.id !== "string" || !/^[a-z0-9-]{1,60}$/.test(p.id) || badKey(p.id) || typeof p.name !== "string") continue;
+    providers.push({ id: p.id, name: str(p.name, 80), handle: str(p.handle, 80), channelId: str(p.channelId, 40), uploadsId: str(p.uploadsId, 40), logo: safeImg(p.logo), enabled: p.enabled !== false, lastSync: +p.lastSync || 0 });
+    const c = Object.hasOwn(snap.catalog, p.id) ? snap.catalog[p.id] : null;
+    if (!c || typeof c.videos !== "object" || !c.videos) continue;
+    const videos = {}, playlists = {}, missing = {};
+    for (const [id, v] of Object.entries(c.videos)) {
+      if (!VID_RE.test(id) || !v || typeof v.t !== "string") continue;
+      videos[id] = { id, t: str(v.t, 300), d: str(v.d, 400), th: safeImg(v.th), pub: +v.pub || 0, dur: +v.dur || 0, emb: v.emb !== false,
+        priv: ["public", "unlisted", "private"].includes(v.priv) ? v.priv : "public", rr: null, vc: +v.vc || 0, at: 0 };
+    }
+    for (const [id, pl] of Object.entries(c.playlists || {})) {
+      if (badKey(id) || !pl || typeof pl.title !== "string" || !Array.isArray(pl.items)) continue;
+      playlists[id] = { id, title: str(pl.title, 200), count: +pl.count || 0, items: pl.items.filter(x => typeof x === "string" && VID_RE.test(x)) };
+    }
+    for (const id of Object.keys(c.missing || {})) if (VID_RE.test(id)) missing[id] = 1;
+    catalog[p.id] = { videos, playlists, syncedAt: +c.syncedAt || 0, olderToken: str(c.olderToken, 400), complete: !!c.complete, missing };
+  }
+  const overrides = {}, ignoredPl = {}, links = {};
+  for (const [id, o] of Object.entries(snap.overrides || {})) {
+    if (!VID_RE.test(id) || !o || typeof o !== "object") continue;
+    const c = {};
+    if (typeof o.anime === "string" && o.anime.trim()) c.anime = o.anime.slice(0, 200);
+    if (TYPE_ORDER.includes(o.type)) c.type = o.type;
+    if (typeof o.season === "number") c.season = Math.max(1, Math.floor(o.season));
+    if (o.ep === null || typeof o.ep === "number") c.ep = o.ep;
+    overrides[id] = c;
+  }
+  for (const [id, v] of Object.entries(snap.ignoredPl || {})) if (!badKey(id) && typeof v === "boolean") ignoredPl[id] = v;
+  for (const [id, arr] of Object.entries(snap.links || {})) {
+    if (badKey(id) || !Array.isArray(arr)) continue;
+    const ids = arr.filter(x => typeof x === "string" && x.length < 200); if (ids.length) links[id] = ids;
+  }
+  return { providers, catalog, overrides, ignoredPl, links, exportedAt: +snap.exportedAt || 0 };
+}
+/* persist=false: visitor view, kept in memory only (nothing is written to their storage). persist=true: owner import. */
+function applySnapshot(c, persist) {
+  S.providers = c.providers; S.catalog = c.catalog; S.overrides = c.overrides; S.ignoredPl = c.ignoredPl; S.links = c.links;
+  S.snapshotAt = persist ? 0 : c.exportedAt;
+  if (persist) ["providers", "catalog", "overrides", "ignoredPl", "links"].forEach(save);
+  invalidate();
+}
+let loadingSnap = false;
+const hasLocalCatalog = () => Object.values(S.catalog).some(c => c && c.videos && Object.keys(c.videos).length);
+async function loadSnapshot() {
+  try {
+    const res = await fetch("catalog.json", { cache: "no-cache" });
+    if (res.ok) { const clean = cleanSnapshot(await res.json()); if (clean) applySnapshot(clean, false); }
+  } catch { /* no published catalog here, which is normal on the owner's own browser */ }
+  finally { loadingSnap = false; route(); }
+}
+function downloadJson(obj, name, pretty) {
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([JSON.stringify(obj, null, pretty ? 2 : 0)], { type: "application/json" })), download: name });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
 /* ---------- 6. Player (YouTube IFrame Player API) ---------- */
 let ytReady = null, player = null, tick = null, curVideo = null;
 function loadYT() {
@@ -570,10 +705,10 @@ function renderNav(route) {
   $("#nav").innerHTML = `<a class="logo" href="#/" aria-label="MyCorner home">M</a>` +
     NAV.map(([h, l, i, c = ""]) => `<a class="${c} ${route === h || (h !== "#/" && route.startsWith(h)) ? "on" : ""}" href="${h}">${svg(i)}<span>${l}</span></a>`).join("");
 }
-const FOOTER = `<footer>MyCorner is a personal project. All video is streamed from official YouTube channels through the YouTube player and is not hosted here. ©2026 All rights reserved. Developed by Steven Edward R.<br>
+const FOOTER = `<footer>MyCorner is a personal project. All video is streamed from official YouTube channels through the YouTube player and is not hosted here.<br>
   This site uses <a href="https://developers.google.com/youtube/terms/api-services-terms-of-service" target="_blank" rel="noopener">YouTube API Services</a> ·
   <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a> ·
-  <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a></footer>`;
+  <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a><br><span id="snapnote"></span></footer>`;
 
 function heartBtn(id) {
   const on = S.watchlist.includes(id);
@@ -652,26 +787,30 @@ function viewProviders() {
       <div style="width:54px;height:54px;border-radius:50%;background:var(--graphite2);overflow:hidden;flex:none">${p.logo ? `<img src="${esc(p.logo)}" alt="">` : ""}</div>
       <div><h3 style="margin:0">${esc(p.name)}${p.enabled ? "" : '<span class="badge">disabled</span>'}</h3><p>${n} videos · ${p.lastSync ? "synced " + ago(p.lastSync) : "never synced"}</p></div></a>`;
   }).join("")}</div>
-  <div class="panel" style="margin-top:22px"><h3>Add a provider</h3><p>Enter the official channel's handle (like @AniOneAsia) or its channel ID (starts with UC). Only add official distributors.</p>
+  ${isAdmin() ? `<div class="panel" style="margin-top:22px"><h3>Add a provider</h3><p>Paste the official channel's link, handle (like @AniOneAsia) or channel ID (starts with UC). Only add official distributors.</p>
     <div class="field"><label for="np-name">Display name</label><input id="np-name" type="text" placeholder="Ani-One Asia"></div>
-    <div class="field"><label for="np-ref">Handle or channel ID</label><input id="np-ref" type="text" placeholder="@AniOneAsia"></div>
-    <button class="btn primary small" data-act="addprov">Add provider</button></div></div>${FOOTER}`;
+    <div class="field"><label for="np-ref">Channel link, handle or ID</label><input id="np-ref" type="text" placeholder="@AniOneAsia"></div>
+    <button class="btn primary small" data-act="addprov">Add provider</button></div>`
+    : `<p class="muted" style="margin-top:22px">Adding and syncing providers becomes available after you save a YouTube API key in Settings.</p>`}</div>${FOOTER}`;
 }
 function viewProvider(id) {
   const p = S.providers.find(x => x.id === id); if (!p) return notFound();
   const cat = S.catalog[id], list = buildLibrary().anime.filter(a => a.providerId === id);
   const pls = cat ? Object.values(cat.playlists).sort((a, b) => a.title.localeCompare(b.title)) : [];
-  const gaps = cat ? pendingGaps(cat).length : 0;
-  return `<div class="wrap">${pageHead(p.name, p.lastSync ? `Last synced ${ago(p.lastSync)} · ${cat ? Object.keys(cat.videos).length : 0} videos · ${pls.length} playlists${gaps ? ` · ${gaps} playlist video(s) waiting to be fetched (press Sync new videos)` : ""}` : "Not synced yet")}
-    <div class="btns" style="margin:14px 0"><button class="btn primary small" data-act="sync" data-id="${esc(id)}">Sync new videos</button>
+  const gaps = cat ? pendingGaps(cat).length : 0, admin = isAdmin();
+  const sub = (p.lastSync || cat) ? `${p.lastSync ? "Last synced " + ago(p.lastSync) + " · " : ""}${cat ? Object.keys(cat.videos).length : 0} videos · ${pls.length} playlists${admin && gaps ? ` · ${gaps} playlist video(s) waiting to be fetched (press Sync new videos)` : ""}` : "Not synced yet";
+  return `<div class="wrap">${pageHead(p.name, sub)}
+    ${admin ? `<div class="btns" style="margin:14px 0"><button class="btn primary small" data-act="sync" data-id="${esc(id)}">Sync new videos</button>
       ${cat && cat.olderToken ? `<button class="btn ghost small" data-act="more" data-id="${esc(id)}">Load ${BATCH_LIMIT} older videos</button>` : ""}
       <button class="btn danger small" data-act="stop" hidden>Stop</button>
       <button class="btn ghost small" data-act="refresh" data-id="${esc(id)}">Refresh metadata &amp; availability</button>
-      <button class="btn ghost small" data-act="togprov" data-id="${esc(id)}">${p.enabled ? "Disable" : "Enable"}</button></div>
+      <button class="btn ghost small" data-act="togprov" data-id="${esc(id)}">${p.enabled ? "Disable" : "Enable"}</button>
+      <button class="btn ghost small" data-act="editprov" data-id="${esc(id)}">Edit provider</button>
+      <button class="btn danger small" data-act="rmprov" data-id="${esc(id)}">Remove</button></div>
     <div class="log" id="synclog" ${S.syncLog.length ? "" : 'hidden'}>${esc(S.syncLog.join("\n"))}</div>
-    <p class="muted" style="margin-top:10px">Sync reads only what changed, so it stays cheap on your daily YouTube quota (10,000 units). A refresh re-checks every stored video, so run it occasionally.</p>
-    <div style="margin-top:26px">${grid(list, "No anime yet. Press Sync new videos above.")}</div>
-    ${pls.length ? `<div class="panel" style="margin-top:30px"><h3>Playlists used for grouping</h3><p>Official playlists define anime titles, seasons and episode order. Untick any that are just collections (like "Popular"). Unticking regroups instantly. A newly ticked playlist fetches its missing videos on the next sync.</p>
+    <p class="muted" style="margin-top:10px">Sync reads only what changed, so it stays cheap on your daily YouTube quota (10,000 units). A refresh re-checks every stored video, so run it occasionally.</p>` : ""}
+    <div style="margin-top:26px">${grid(list, admin ? "No anime yet. Press Sync new videos above." : "This provider has no titles in the published catalog yet.")}</div>
+    ${admin && pls.length ? `<div class="panel" style="margin-top:30px"><h3>Playlists used for grouping</h3><p>Official playlists define anime titles, seasons and episode order. Untick any that are just collections (like "Popular"). Unticking regroups instantly. A newly ticked playlist fetches its missing videos on the next sync.</p>
       ${pls.map(pl => `<label class="switch"><span>${esc(pl.title)} <span class="muted">(${pl.count})</span></span><input type="checkbox" data-act="plgroup" data-id="${esc(pl.id)}" ${plIgnored(pl) ? "" : "checked"}></label>`).join("")}</div>` : ""}</div>${FOOTER}`;
 }
 function viewAnime(id) {
@@ -681,11 +820,17 @@ function viewAnime(id) {
   const first = a.episodes.find(e => S.history[e.videoId]) || a.episodes[0] || a.items[0];
   const groups = TYPE_ORDER.map(t => [t, inSeason.filter(i => i.type === t)]).filter(([, l]) => l.length);
   const srcPl = [...new Set(inSeason.map(i => i.pl).filter(Boolean))];
+  const related = relatedAnime(a), manual = new Set(S.links[a.id] || []), admin = isAdmin();
+  const canLink = admin && S.providers.length > 1;
+  const alsoOn = related.length || canLink ? `<div class="seasonbar" style="margin:4px 0 6px;align-items:center">${related.length ? '<span class="muted">Also on:</span>' : ""}
+      ${related.map(x => `<a class="chip" href="#/anime/${encodeURIComponent(x.id)}">${esc(x.provider)}${normKey(x.title) === normKey(a.title) ? "" : " · " + esc(x.title)}</a>${admin && manual.has(x.id) ? `<button class="chip" data-act="unlink" data-id="${esc(a.id)}" data-other="${esc(x.id)}" aria-label="Remove link to ${esc(x.provider)}">×</button>` : ""}`).join("")}
+      ${canLink ? `<button class="chip" data-act="link" data-id="${esc(a.id)}">+ Link to another provider</button>` : ""}</div>` : "";
   return `<section class="detail-hero"><div class="bg" style="background-image:url('${esc(a.thumb)}')"></div><div class="copy">
       <span class="eyebrow">${esc(a.provider)}</span><h1>${esc(a.title)}</h1><p class="muted" style="color:#c4c6d0;max-width:60ch">${esc(a.synopsis)}</p>
       <div class="btns"><a class="btn primary" href="#/watch/${esc(first.videoId)}">${svg("play", 'width="16" height="16"')} ${S.history[first.videoId] ? "Continue" : "Watch Now"}</a>
       <button class="btn ghost" data-act="wl" data-id="${esc(a.id)}">${S.watchlist.includes(a.id) ? "Remove from Watchlist" : "Add to Watchlist"}</button></div></div></section>
     <div class="wrap">${a.seasons.length > 1 ? `<div class="seasonbar">${a.seasons.map(s => `<a class="chip ${s === season ? "on" : ""}" href="#/anime/${encodeURIComponent(id)}?s=${s}">Season ${s}</a>`).join("")}</div>` : '<div style="height:22px"></div>'}
+    ${alsoOn}
     ${srcPl.length ? `<p class="muted">Grouped from playlist${srcPl.length > 1 ? "s" : ""}: ${esc(srcPl.join(" · "))}</p>` : ""}
     ${groups.map(([t, l]) => `<h2 style="font:600 17px var(--display);margin:20px 0 10px">${TYPE_LABEL[t]}${t === "episode" ? "s" : l.length > 1 ? "s" : ""}</h2><div class="eplist">${l.map(i => epRow(i)).join("")}</div>`).join("")}</div>${FOOTER}`;
 }
@@ -696,7 +841,7 @@ function epRow(i, current) {
       ${i.dur ? `<span class="tag">${fmtDur(i.dur)}</span>` : ""}${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}</a>
     <a href="#/watch/${esc(i.videoId)}"><div class="t">${i.ep != null && i.type === "episode" ? `E${i.ep} · ` : ""}${esc(i.t)}</div>
       <div class="s">${TYPE_LABEL[i.type]} · ${new Date(i.pub).toLocaleDateString()}${bad ? '<span class="badge">may not play here</span>' : ""}${h && pct > 92 ? ' · Watched' : ""}</div></a>
-    <button class="edit" data-act="edit" data-id="${esc(i.videoId)}" aria-label="Correct this video's details">Edit</button></div>`;
+    ${isAdmin() ? `<button class="edit" data-act="edit" data-id="${esc(i.videoId)}" aria-label="Correct this video's details">Edit</button>` : ""}</div>`;
 }
 function viewWatch(vid) {
   const rec = buildLibrary().videos.get(vid); if (!rec) return notFound();
@@ -743,6 +888,9 @@ function viewSettings() {
   <div class="panel"><h3>Playback</h3>
     <label class="switch"><span>Play the next episode automatically</span><input type="checkbox" data-act="pref" data-k="autoNext" ${s.autoNext ? "checked" : ""}></label>
     <label class="switch"><span>Resume where I left off</span><input type="checkbox" data-act="pref" data-k="resume" ${s.resume ? "checked" : ""}></label></div>
+  ${isAdmin() ? `<div class="panel"><h3>Publish your catalog</h3><p>Visitors don't have your API key, so they can't sync on their own. Export your catalog, save the file as <b>catalog.json</b> next to this page on your site, and visitors will see your catalog with no key needed. Re-export every few weeks, because YouTube expects stored data to be refreshed regularly. The file holds only public YouTube information, never your key, watchlist or history. You can also import a catalog file here to restore it in another browser.</p>
+    <div class="btns"><button class="btn primary small" data-act="exportsnap">Export catalog.json</button><button class="btn ghost small" data-act="importsnap">Import catalog file</button></div>
+    <input type="file" id="snapfile" accept=".json,application/json" hidden></div>` : ""}
   <div class="panel"><h3>Your data</h3><p>Everything personal lives only in this browser. Clearing it cannot be undone.</p>
     <div class="btns"><button class="btn ghost small" data-act="export">Export backup</button>
     <button class="btn ghost small" data-act="clearcache">Clear catalog cache</button>
@@ -755,12 +903,15 @@ function route() {
   destroyPlayer();
   const hash = location.hash || "#/", [path] = hash.split("?"), parts = path.slice(2).split("/").map(decodeURIComponent);
   const [r, arg] = parts; let html;
+  if (loadingSnap) { $("#app").innerHTML = `<div class="wrap"><div class="empty"><h2>Loading the catalog...</h2><p>One moment.</p></div></div>`; renderNav(path); return; }
   try {
     html = !r ? viewHome() : r === "explore" ? viewExplore() : r === "providers" ? (arg ? viewProvider(arg) : viewProviders()) :
       r === "anime" ? viewAnime(arg) : r === "watch" ? viewWatch(arg) : r === "search" ? viewSearch() :
       r === "watchlist" ? viewWatchlist() : r === "history" ? viewHistory() : r === "settings" ? viewSettings() : notFound();
   } catch (e) { console.error(e); html = `<div class="wrap"><div class="empty"><h2>Something went wrong</h2><p>The page could not be displayed. Try going back home.</p></div></div>`; }
   $("#app").innerHTML = html;
+  const note = S.snapshotAt && $("#snapnote");
+  if (note) note.textContent = `Catalog snapshot from ${new Date(S.snapshotAt).toLocaleDateString()}${Date.now() - S.snapshotAt > 30 * 864e5 ? ". It may be out of date." : "."}`;
   renderNav(path); if (!hash.includes("?s=")) scrollTo(0, 0);
   document.title = r === "anime" || r === "watch" ? `${buildLibrary().videos.get(arg)?.anime.title || buildLibrary().byId.get(arg)?.title || "MyCorner"} · MyCorner` : "MyCorner";
 }
@@ -770,14 +921,31 @@ addEventListener("hashchange", route);
 const rerender = () => { const y = scrollY; route(); scrollTo(0, y); };
 function editDialog(vid) {
   const rec = buildLibrary().videos.get(vid); if (!rec) return;
-  const { item: v, anime: a } = rec, dlg = $("#dlg");
-  dlg.innerHTML = `<form method="dialog" id="editform" data-id="${esc(vid)}"><h3 style="font:600 18px var(--display)">Correct this video</h3><p class="muted" style="margin:4px 0 8px">${esc(v.t)}</p>
+  const { item: v, anime: a } = rec;
+  openDialog(`<form method="dialog" id="editform" data-id="${esc(vid)}"><h3 style="font:600 18px var(--display)">Correct this video</h3><p class="muted" style="margin:4px 0 8px">${esc(v.t)}</p>
     <div class="field"><label for="e-anime">Anime title</label><input id="e-anime" type="text" value="${esc(a.title)}"></div>
     <div class="field"><label for="e-type">Type</label><select id="e-type">${TYPE_ORDER.map(t => `<option value="${t}" ${v.type === t ? "selected" : ""}>${TYPE_LABEL[t]}</option>`).join("")}</select></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div class="field"><label for="e-season">Season</label><input id="e-season" type="number" min="1" value="${v.season}"></div>
     <div class="field"><label for="e-ep">Episode</label><input id="e-ep" type="number" min="0" value="${v.ep ?? ""}"></div></div>
-    <div class="btns"><button class="btn primary small" value="save">Save</button><button class="btn ghost small" value="reset">Reset to automatic</button><button class="btn ghost small" value="cancel">Cancel</button></div></form>`;
-  dlg.showModal();
+    <div class="btns"><button class="btn primary small" value="save">Save</button><button class="btn ghost small" value="reset">Reset to automatic</button><button class="btn ghost small" value="cancel">Cancel</button></div></form>`);
+}
+/* returnValue is cleared on every open. Otherwise pressing Esc would reuse the previous dialog's "save" result. */
+function openDialog(html) { const dlg = $("#dlg"); dlg.innerHTML = html; dlg.returnValue = ""; dlg.showModal(); }
+function providerDialog(p) {
+  openDialog(`<form method="dialog" id="provform" data-id="${esc(p.id)}"><h3 style="font:600 18px var(--display)">Edit provider</h3>
+    <div class="field"><label for="pv-name">Display name</label><input id="pv-name" type="text" value="${esc(p.name)}"></div>
+    <div class="field"><label for="pv-ref">Channel link, handle or ID</label><input id="pv-ref" type="text" value="${esc(p.handle || p.channelId)}"></div>
+    <p class="muted">Renaming keeps everything. Pointing at a different channel removes this provider's saved catalog so you can sync the new one.</p>
+    <div class="btns"><button class="btn primary small" value="save">Save</button><button class="btn ghost small" value="cancel">Cancel</button></div></form>`);
+}
+const linkLabel = x => `${x.title} — ${x.provider}`;
+function linkDialog(a) {
+  const others = buildLibrary().anime.filter(x => x.providerId !== a.providerId);
+  openDialog(`<form method="dialog" id="linkform" data-id="${esc(a.id)}"><h3 style="font:600 18px var(--display)">Link to the same show</h3>
+    <p class="muted" style="margin:4px 0 8px">Pick the matching title on another provider. Both pages will then point to each other. Nothing is merged.</p>
+    <div class="field"><label for="lk-in">Title on another provider</label><input id="lk-in" type="text" list="lk-list" autocomplete="off" placeholder="Start typing a title">
+    <datalist id="lk-list">${others.map(x => `<option value="${esc(linkLabel(x))}"></option>`).join("")}</datalist></div>
+    <div class="btns"><button class="btn primary small" value="save">Link</button><button class="btn ghost small" value="cancel">Cancel</button></div></form>`);
 }
 document.addEventListener("click", async e => {
   const el = e.target.closest("[data-act]"); if (!el || el.tagName === "SELECT" || el.type === "checkbox") return;
@@ -794,19 +962,29 @@ document.addEventListener("click", async e => {
     $("#synclog")?.removeAttribute("hidden"); const lg = $("#synclog"); if (lg) lg.textContent = S.syncLog.join("\n");
   } else if (act === "togprov") { const p = S.providers.find(x => x.id === id); p.enabled = !p.enabled; save("providers"); rerender(); }
   else if (act === "addprov") {
-    const name = $("#np-name").value.trim(), ref = $("#np-ref").value.trim();
-    if (!name || !ref) return toast("Please enter both a name and a handle or channel ID.");
-    const pid = slug(name); if (S.providers.some(p => p.id === pid)) return toast("A provider with that name already exists.");
-    const isId = /^UC[\w-]{20,}$/.test(ref);
-    S.providers.push({ id: pid, name, handle: isId ? "" : ref, channelId: isId ? ref : "", uploadsId: "", logo: "", enabled: true, lastSync: 0 });
+    const name = $("#np-name").value.trim(), ref = parseChannelRef($("#np-ref").value);
+    if (!name || !ref) return toast("Please enter a display name and a valid handle, channel link or channel ID.\nExample: @AniOneAsia");
+    const pid = slug(name);
+    if (badKey(pid) || S.providers.some(p => p.id === pid)) return toast("A provider with that name already exists.\nPlease choose a different display name.");
+    const dup = duplicateProvider(ref); if (dup) return toast(`That channel is already added as ${dup.name}.`);
+    S.providers.push({ id: pid, name, handle: ref.handle, channelId: ref.channelId, uploadsId: "", logo: "", enabled: true, lastSync: 0 });
     save("providers"); location.hash = `#/providers/${pid}`;
+  } else if (act === "editprov") { providerDialog(S.providers.find(x => x.id === id)); }
+  else if (act === "rmprov") {
+    const p = S.providers.find(x => x.id === id), n = Object.keys(S.catalog[id]?.videos || {}).length;
+    if (p && confirm(`Remove ${p.name}?\nIts ${n} saved videos are deleted from this browser, and watchlist entries for its shows are removed. Your viewing history is kept. This cannot be undone.`)) {
+      removeProvider(id); toast(`${p.name} was removed.`); location.hash = "#/providers";
+    }
+  } else if (act === "link") { linkDialog(buildLibrary().byId.get(id)); }
+  else if (act === "unlink") { linkAnime(id, el.dataset.other, false); rerender(); }
+  else if (act === "exportsnap") { downloadJson(buildSnapshot(), "catalog.json", false); toast("Saved catalog.json.\nPut it next to this page on your site, and visitors will see your catalog."); }
+  else if (act === "importsnap") { $("#snapfile").click();
   } else if (act === "ftype") { exploreType = v; rerender(); }
   else if (act === "savekey") { S.settings.apiKey = $("#key").value.trim(); save("settings"); toast("API key saved in this browser."); }
   else if (act === "edit") { e.preventDefault(); editDialog(id); }
   else if (act === "clearhist") { if (confirm("Clear your viewing history on this browser?")) { S.history = {}; save("history"); rerender(); } }
   else if (act === "export") {
-    const data = JSON.stringify({ watchlist: S.watchlist, history: S.history, overrides: S.overrides, settings: { ...S.settings, apiKey: "" } }, null, 2);
-    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([data], { type: "application/json" })), download: "mycorner-backup.json" }); a.click();
+    downloadJson({ watchlist: S.watchlist, history: S.history, overrides: S.overrides, links: S.links, settings: { ...S.settings, apiKey: "" } }, "mycorner-backup.json", true);
   } else if (act === "clearcache") { if (confirm("Remove the saved catalog? You will need to sync again. Your watchlist and history are kept.")) { S.catalog = {}; S.providers.forEach(p => p.lastSync = 0); save("catalog"); save("providers"); invalidate(); toast("Catalog cache cleared."); } }
   else if (act === "clearall") { if (confirm("Erase ALL MyCorner data on this browser, including your API key?")) { Object.keys(localStorage).filter(k => k.startsWith("mc.")).forEach(k => localStorage.removeItem(k)); location.hash = "#/"; location.reload(); } }
 });
@@ -817,21 +995,49 @@ document.addEventListener("change", e => {
   else if (act === "fprov") { exploreProv = el.value; rerender(); }
   else if (act === "fsort") { exploreSort = el.value; rerender(); }
 });
+document.addEventListener("change", async e => {
+  if (e.target.id !== "snapfile") return;
+  const file = e.target.files?.[0]; e.target.value = ""; if (!file) return;
+  let clean = null;
+  try { clean = cleanSnapshot(JSON.parse(await file.text())); } catch { /* reported just below */ }
+  if (!clean) return toast("That file isn't a MyCorner catalog export.\nChoose a catalog.json created with Export catalog.json.");
+  const n = clean.providers.length;
+  if (!confirm(`Replace the catalog in this browser with the file's contents (${n} provider${n === 1 ? "" : "s"})?\nYour watchlist and history are kept.`)) return;
+  applySnapshot(clean, true); toast("Catalog imported."); rerender();
+});
 document.addEventListener("input", e => {
   if (e.target.id === "q") { searchQ = e.target.value; $("#results").innerHTML = searchResults(); }
 });
 $("#dlg").addEventListener("close", () => {
-  const dlg = $("#dlg"), f = $("#editform"); if (!f) return;
-  const vid = f.dataset.id, val = dlg.returnValue;
-  if (val === "save") {
-    const ep = $("#e-ep").value;
-    S.overrides[vid] = { anime: $("#e-anime").value.trim() || undefined, type: $("#e-type").value, season: +$("#e-season").value || 1, ep: ep === "" ? null : +ep };
-    save("overrides"); invalidate(); toast("Correction saved. It will survive future syncs.");
-    const rec = buildLibrary().videos.get(vid); if (location.hash.startsWith("#/anime/") && rec) location.hash = `#/anime/${encodeURIComponent(rec.anime.id)}`; else rerender();
-  } else if (val === "reset") { delete S.overrides[vid]; save("overrides"); invalidate(); rerender(); }
+  const dlg = $("#dlg"), val = dlg.returnValue, ef = $("#editform"), pf = $("#provform"), lf = $("#linkform");
+  if (ef) {
+    const vid = ef.dataset.id;
+    if (val === "save") {
+      const ep = $("#e-ep").value;
+      S.overrides[vid] = { anime: $("#e-anime").value.trim() || undefined, type: $("#e-type").value, season: +$("#e-season").value || 1, ep: ep === "" ? null : +ep };
+      save("overrides"); invalidate(); toast("Correction saved. It will survive future syncs.");
+      const rec = buildLibrary().videos.get(vid); if (location.hash.startsWith("#/anime/") && rec) location.hash = `#/anime/${encodeURIComponent(rec.anime.id)}`; else rerender();
+    } else if (val === "reset") { delete S.overrides[vid]; save("overrides"); invalidate(); rerender(); }
+  } else if (pf && val === "save") {
+    const p = S.providers.find(x => x.id === pf.dataset.id); if (!p) return;
+    const name = $("#pv-name").value.trim(), ref = parseChannelRef($("#pv-ref").value);
+    if (!name || !ref) return toast("Please enter a name and a valid handle, channel link or channel ID.\nExample: @AniOneAsia");
+    const dup = duplicateProvider(ref, p); if (dup) return toast(`That channel is already added as ${dup.name}.`);
+    const n = Object.keys(S.catalog[p.id]?.videos || {}).length;
+    if (n && refChanged(p, ref) && !confirm(`This points ${p.name} at a different channel.\nIts ${n} saved videos will be removed and you will need to sync again. Continue?`)) return;
+    const reset = applyProviderEdit(p, name, ref);
+    save("providers"); save("catalog"); invalidate(); toast(reset ? "Provider updated. Press Sync new videos to load its catalog." : "Provider updated."); rerender();
+  } else if (lf && val === "save") {
+    const a = S.providers.length && buildLibrary().byId.get(lf.dataset.id), label = $("#lk-in").value.trim();
+    const other = a && buildLibrary().anime.find(x => x.providerId !== a.providerId && linkLabel(x) === label);
+    if (!other) return toast("Please pick a title from the suggestions list.\nStart typing and choose one of the matches.");
+    linkAnime(a.id, other.id); toast(`Linked to ${other.provider}.`); rerender();
+  }
 });
 
+loadingSnap = location.protocol.startsWith("http") && !hasLocalCatalog();
 route();
+if (loadingSnap) loadSnapshot();
 </script>
 </body>
 </html>
