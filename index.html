@@ -313,6 +313,32 @@ async function scanUploads(p, cat, startToken, { stopAtKnown, limit }) {
   }
   return { added, token, hitKnown, pages };
 }
+const GAP_LIMIT = 1000; // max playlist videos fetched per run (1000 videos = about 20 quota units)
+/* Videos that appear in an official playlist but are not stored yet. IDs YouTube already told us it cannot return
+   (deleted, private) are remembered in cat.missing so we do not ask for them again on every sync. */
+function pendingGaps(cat) {
+  const want = new Set(), skip = cat.missing || {};
+  for (const pl of Object.values(cat.playlists)) {
+    if (plIgnored(pl)) continue;
+    for (const id of pl.items) if (!cat.videos[id] && !skip[id]) want.add(id);
+  }
+  return [...want];
+}
+async function fillPlaylistGaps(cat) {
+  cat.missing ||= {};
+  const all = pendingGaps(cat), ids = all.slice(0, GAP_LIMIT);
+  if (!ids.length) return log("Playlists are complete: every listed video is already stored.");
+  log(`Fetching ${ids.length} video(s) that playlists list but you don't have yet${all.length > ids.length ? ` (${all.length - ids.length} more on the next sync)` : ""}...`);
+  let fetched = 0, gone = 0;
+  for (let i = 0; i < ids.length && !cancelSync; i += 50) {
+    const chunk = ids.slice(i, i + 50), got = await fetchVideos(chunk), seen = new Set(got.map(v => v.id));
+    got.forEach(v => { cat.videos[v.id] = v; });
+    chunk.filter(id => !seen.has(id)).forEach(id => { cat.missing[id] = Date.now(); gone++; });
+    fetched += got.length; save("catalog");
+    log(`Playlist videos fetched: ${fetched} of ${ids.length}.`);
+  }
+  if (gone) log(`${gone} listed video(s) are deleted or private, so they were skipped.`);
+}
 async function syncProvider(p, { more = false } = {}) {
   S.syncLog = []; cancelSync = false; const startQuota = quotaUsed;
   const cat = S.catalog[p.id] ||= { videos: {}, playlists: {}, syncedAt: 0, olderToken: "", complete: false };
@@ -355,6 +381,7 @@ async function syncProvider(p, { more = false } = {}) {
       touched++; if (touched % 10 === 0) { save("catalog"); log(`Playlists updated so far: ${touched}`); }
     }
     log(`Playlists: ${pls.length} found, ${touched} updated.`);
+    if (!cancelSync) await fillPlaylistGaps(cat);
     cat.syncedAt = p.lastSync = Date.now();
     log(cancelSync ? "Stopped by you. Everything fetched so far was saved." : "Sync finished.");
   } catch (e) {
@@ -370,7 +397,7 @@ async function refreshProvider(p) {
   S.syncLog = []; const cat = S.catalog[p.id];
   if (!cat || !Object.keys(cat.videos).length) return toast("Nothing to refresh yet.\nRun a sync first.");
   try {
-    const ids = Object.keys(cat.videos); log(`Refreshing ${ids.length} video(s)...`);
+    cat.missing = {}; const ids = Object.keys(cat.videos); log(`Refreshing ${ids.length} video(s)...`);
     const got = await fetchVideos(ids), seen = new Set(got.map(v => v.id));
     got.forEach(v => cat.videos[v.id] = v);
     const gone = ids.filter(id => !seen.has(id)); gone.forEach(id => delete cat.videos[id]);
@@ -422,12 +449,12 @@ function buildLibrary() {
       let type = o.type || classify(v.t);
       if (!o.type && type === "other" && m) type = "episode";
       const title = (o.anime || cleanTitle(m ? m.title : v.t)).trim();
-      const season = o.season ?? parseSeason(v.t) ?? parseSeason(m?.title) ?? 1;
+      const season = o.season ?? parseSeason(m?.title) ?? parseSeason(v.t) ?? 1;
       const ep = o.ep ?? parseEp(v.t) ?? (m && type === "episode" ? m.index + 1 : null);
       const id = `${p.id}:${slug(title)}`;
       let a = animeMap.get(id);
       if (!a) animeMap.set(id, a = { id, providerId: p.id, provider: p.name, title, items: [] });
-      const item = { ...v, videoId: v.id, type, season, ep, animeId: id };
+      const item = { ...v, videoId: v.id, type, season, ep, animeId: id, pl: m?.title || "" };
       a.items.push(item); videos.set(v.id, { item, anime: a });
     }
   }
@@ -634,7 +661,8 @@ function viewProvider(id) {
   const p = S.providers.find(x => x.id === id); if (!p) return notFound();
   const cat = S.catalog[id], list = buildLibrary().anime.filter(a => a.providerId === id);
   const pls = cat ? Object.values(cat.playlists).sort((a, b) => a.title.localeCompare(b.title)) : [];
-  return `<div class="wrap">${pageHead(p.name, p.lastSync ? `Last synced ${ago(p.lastSync)} · ${cat ? Object.keys(cat.videos).length : 0} videos` : "Not synced yet")}
+  const gaps = cat ? pendingGaps(cat).length : 0;
+  return `<div class="wrap">${pageHead(p.name, p.lastSync ? `Last synced ${ago(p.lastSync)} · ${cat ? Object.keys(cat.videos).length : 0} videos · ${pls.length} playlists${gaps ? ` · ${gaps} playlist video(s) waiting to be fetched (press Sync new videos)` : ""}` : "Not synced yet")}
     <div class="btns" style="margin:14px 0"><button class="btn primary small" data-act="sync" data-id="${esc(id)}">Sync new videos</button>
       ${cat && cat.olderToken ? `<button class="btn ghost small" data-act="more" data-id="${esc(id)}">Load ${BATCH_LIMIT} older videos</button>` : ""}
       <button class="btn danger small" data-act="stop" hidden>Stop</button>
@@ -643,7 +671,7 @@ function viewProvider(id) {
     <div class="log" id="synclog" ${S.syncLog.length ? "" : 'hidden'}>${esc(S.syncLog.join("\n"))}</div>
     <p class="muted" style="margin-top:10px">Sync reads only what changed, so it stays cheap on your daily YouTube quota (10,000 units). A refresh re-checks every stored video, so run it occasionally.</p>
     <div style="margin-top:26px">${grid(list, "No anime yet. Press Sync new videos above.")}</div>
-    ${pls.length ? `<div class="panel" style="margin-top:30px"><h3>Playlists used for grouping</h3><p>Official playlists define anime groups and episode order. Untick any that are just collections (like "Popular").</p>
+    ${pls.length ? `<div class="panel" style="margin-top:30px"><h3>Playlists used for grouping</h3><p>Official playlists define anime titles, seasons and episode order. Untick any that are just collections (like "Popular"). Unticking regroups instantly. A newly ticked playlist fetches its missing videos on the next sync.</p>
       ${pls.map(pl => `<label class="switch"><span>${esc(pl.title)} <span class="muted">(${pl.count})</span></span><input type="checkbox" data-act="plgroup" data-id="${esc(pl.id)}" ${plIgnored(pl) ? "" : "checked"}></label>`).join("")}</div>` : ""}</div>${FOOTER}`;
 }
 function viewAnime(id) {
@@ -652,11 +680,13 @@ function viewAnime(id) {
   const inSeason = a.items.filter(i => i.season === season);
   const first = a.episodes.find(e => S.history[e.videoId]) || a.episodes[0] || a.items[0];
   const groups = TYPE_ORDER.map(t => [t, inSeason.filter(i => i.type === t)]).filter(([, l]) => l.length);
+  const srcPl = [...new Set(inSeason.map(i => i.pl).filter(Boolean))];
   return `<section class="detail-hero"><div class="bg" style="background-image:url('${esc(a.thumb)}')"></div><div class="copy">
       <span class="eyebrow">${esc(a.provider)}</span><h1>${esc(a.title)}</h1><p class="muted" style="color:#c4c6d0;max-width:60ch">${esc(a.synopsis)}</p>
       <div class="btns"><a class="btn primary" href="#/watch/${esc(first.videoId)}">${svg("play", 'width="16" height="16"')} ${S.history[first.videoId] ? "Continue" : "Watch Now"}</a>
       <button class="btn ghost" data-act="wl" data-id="${esc(a.id)}">${S.watchlist.includes(a.id) ? "Remove from Watchlist" : "Add to Watchlist"}</button></div></div></section>
     <div class="wrap">${a.seasons.length > 1 ? `<div class="seasonbar">${a.seasons.map(s => `<a class="chip ${s === season ? "on" : ""}" href="#/anime/${encodeURIComponent(id)}?s=${s}">Season ${s}</a>`).join("")}</div>` : '<div style="height:22px"></div>'}
+    ${srcPl.length ? `<p class="muted">Grouped from playlist${srcPl.length > 1 ? "s" : ""}: ${esc(srcPl.join(" · "))}</p>` : ""}
     ${groups.map(([t, l]) => `<h2 style="font:600 17px var(--display);margin:20px 0 10px">${TYPE_LABEL[t]}${t === "episode" ? "s" : l.length > 1 ? "s" : ""}</h2><div class="eplist">${l.map(i => epRow(i)).join("")}</div>`).join("")}</div>${FOOTER}`;
 }
 function epRow(i, current) {
