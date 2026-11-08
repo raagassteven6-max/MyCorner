@@ -570,7 +570,7 @@ function renderNav(route) {
   $("#nav").innerHTML = `<a class="logo" href="#/" aria-label="MyCorner home">M</a>` +
     NAV.map(([h, l, i, c = ""]) => `<a class="${c} ${route === h || (h !== "#/" && route.startsWith(h)) ? "on" : ""}" href="${h}">${svg(i)}<span>${l}</span></a>`).join("");
 }
-const FOOTER = `<footer>MyCorner is a personal project. All video is streamed from official YouTube channels through the YouTube player and is not hosted here.<br>
+const FOOTER = `<footer>MyCorner is a personal project. All video is streamed from official YouTube channels through the YouTube player and is not hosted here. ©2026 All rights reserved. Developed by Steven Edward R.<br>
   This site uses <a href="https://developers.google.com/youtube/terms/api-services-terms-of-service" target="_blank" rel="noopener">YouTube API Services</a> ·
   <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a> ·
   <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a></footer>`;
