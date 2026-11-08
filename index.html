@@ -224,6 +224,7 @@ const invalidate = () => { libCache = null; };
 
 /* ---------- 3. YouTube Data API v3 (quota-aware) ---------- */
 class ApiError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
+let quotaUsed = 0, cancelSync = false; // quotaUsed counts requests this session (each costs 1 unit here)
 const ytCache = new Map(); // short-lived in-memory cache for identical requests
 async function yt(endpoint, params, { retries = 2 } = {}) {
   if (!S.settings.apiKey) throw new ApiError("No YouTube API key is set.\nOpen Settings and paste your key first.", "nokey");
@@ -238,7 +239,7 @@ async function yt(endpoint, params, { retries = 2 } = {}) {
       if (attempt < retries) { await sleep(800 * 2 ** attempt); continue; }
       throw new ApiError("Could not reach YouTube.\nCheck your internet connection and try again.", "network");
     }
-    if (res.ok) { const data = await res.json(); ytCache.set(url, { at: Date.now(), data }); return data; }
+    if (res.ok) { quotaUsed++; const data = await res.json(); ytCache.set(url, { at: Date.now(), data }); return data; }
     const body = await res.json().catch(() => ({}));
     const reason = body?.error?.errors?.[0]?.reason || "";
     if (res.status >= 500 && attempt < retries) { await sleep(800 * 2 ** attempt); continue; }
@@ -286,57 +287,83 @@ async function resolveChannel(p) {
   p.logo = ch.snippet.thumbnails?.medium?.url || ch.snippet.thumbnails?.default?.url || "";
   log(`Channel found: ${ch.snippet.title}`);
 }
-async function syncProvider(p, { full = false } = {}) {
-  S.syncLog = []; const cat = S.catalog[p.id] ||= { videos: {}, playlists: {}, syncedAt: 0 };
-  try {
-    log(full ? "Full sync started." : "Incremental sync started.");
-    await resolveChannel(p);
-    // Step 1: walk the uploads playlist (1 quota unit per 50 videos), stop at the first known video unless full.
-    const fresh = []; let token = "", done = false, pages = 0;
-    while (!done && pages < 100) {
-      const r = await yt("playlistItems", { part: "contentDetails", playlistId: p.uploadsId, maxResults: 50, ...(token && { pageToken: token }) });
-      pages++;
-      for (const it of r.items || []) {
-        const id = it.contentDetails.videoId;
-        if (cat.videos[id] && !full) { done = true; break; }
-        if (!cat.videos[id]) fresh.push(id);
-      }
-      token = r.nextPageToken; if (!token) done = true;
-      log(`Scanned uploads page ${pages} (${fresh.length} new so far)`);
+const BATCH_LIMIT = 200;   // videos loaded per press: the first sync and each "Load older" press
+const MAX_PAGES = 40;      // hard safety stop per run (40 pages = 2,000 videos)
+/* Walks the uploads playlist newest-first. Every page is saved immediately, so quota already spent is never lost.
+   stopAtKnown: stop at the first video we already have (cheap "what's new" check).
+   Returns where it stopped so "Load older" can resume from there. */
+async function scanUploads(p, cat, startToken, { stopAtKnown, limit }) {
+  let token = startToken, added = 0, pages = 0, hitKnown = false;
+  while (pages < MAX_PAGES && added < limit && !cancelSync) {
+    const r = await yt("playlistItems", { part: "contentDetails", playlistId: p.uploadsId, maxResults: 50, ...(token && { pageToken: token }) });
+    pages++;
+    const fresh = [];
+    for (const it of r.items || []) {
+      const id = it.contentDetails.videoId;
+      if (cat.videos[id]) { if (stopAtKnown) { hitKnown = true; break; } continue; }
+      fresh.push(id);
     }
-    // Step 2: fetch details only for new videos.
     if (fresh.length) {
       for (const v of await fetchVideos(fresh)) cat.videos[v.id] = v;
-      log(`Saved ${fresh.length} new video(s).`);
-    } else log("No new videos.");
-    // Step 3: official playlists. Skip any whose item count hasn't changed.
-    const pls = []; token = "";
+      added += fresh.length; save("catalog");
+    }
+    token = r.nextPageToken || "";
+    log(`Page ${pages}: ${fresh.length} new video(s), ${Object.keys(cat.videos).length} stored in total.`);
+    if (hitKnown || !token) break;
+  }
+  return { added, token, hitKnown, pages };
+}
+async function syncProvider(p, { more = false } = {}) {
+  S.syncLog = []; cancelSync = false; const startQuota = quotaUsed;
+  const cat = S.catalog[p.id] ||= { videos: {}, playlists: {}, syncedAt: 0, olderToken: "", complete: false };
+  try {
+    await resolveChannel(p);
+    const empty = !Object.keys(cat.videos).length;
+    if (more) {
+      if (!cat.olderToken) { log("There are no older videos left to load."); return; }
+      log(`Loading up to ${BATCH_LIMIT} older videos...`);
+      const r = await scanUploads(p, cat, cat.olderToken, { stopAtKnown: false, limit: BATCH_LIMIT });
+      cat.olderToken = r.token; cat.complete = !r.token;
+      log(r.token ? `Done. Press "Load older videos" again if you want more.` : "Done. You now have the channel's complete upload history.");
+    } else {
+      log(empty ? `First sync: loading the newest ${BATCH_LIMIT} videos. You can load older ones afterwards.` : "Checking for new videos...");
+      const r = await scanUploads(p, cat, "", { stopAtKnown: !empty, limit: BATCH_LIMIT });
+      if (empty) { cat.olderToken = r.token; cat.complete = !r.token; }
+      log(r.added ? `Added ${r.added} new video(s).` : "No new videos.");
+    }
+    if (cancelSync) { log("Stopped by you. Everything fetched so far was saved."); return; }
+    // Official playlists define anime groups and episode order. Unchanged playlists are skipped to save quota.
+    log("Reading official playlists...");
+    const pls = []; let token = "";
     do {
       const r = await yt("playlists", { part: "snippet,contentDetails", channelId: p.channelId, maxResults: 50, ...(token && { pageToken: token }) });
       pls.push(...(r.items || [])); token = r.nextPageToken;
-    } while (token && pls.length < 500);
+    } while (token && pls.length < 500 && !cancelSync);
     const live = new Set(pls.map(x => x.id));
     for (const id of Object.keys(cat.playlists)) if (!live.has(id)) delete cat.playlists[id];
     let touched = 0;
     for (const pl of pls) {
+      if (cancelSync) break;
       const old = cat.playlists[pl.id], n = pl.contentDetails.itemCount;
-      if (old && old.count === n && !full) continue;
-      if (n === 0) { cat.playlists[pl.id] = { id: pl.id, title: pl.snippet.title, count: 0, items: [] }; continue; }
+      if (old && old.count === n) continue;
       const items = []; let t2 = "";
-      do {
+      if (n > 0) do {
         const r = await yt("playlistItems", { part: "contentDetails", playlistId: pl.id, maxResults: 50, ...(t2 && { pageToken: t2 }) });
         items.push(...(r.items || []).map(i => i.contentDetails.videoId)); t2 = r.nextPageToken;
-      } while (t2);
+      } while (t2 && !cancelSync);
       cat.playlists[pl.id] = { id: pl.id, title: pl.snippet.title, count: n, items };
-      touched++;
+      touched++; if (touched % 10 === 0) { save("catalog"); log(`Playlists updated so far: ${touched}`); }
     }
     log(`Playlists: ${pls.length} found, ${touched} updated.`);
     cat.syncedAt = p.lastSync = Date.now();
-    log("Sync finished.");
+    log(cancelSync ? "Stopped by you. Everything fetched so far was saved." : "Sync finished.");
   } catch (e) {
     log(`Stopped: ${e.message}`);
     toast(e.message);
-  } finally { invalidate(); save("catalog"); save("providers"); }
+  } finally {
+    log(`About ${quotaUsed - startQuota} quota unit(s) used in this run (your daily limit is 10,000).`);
+    invalidate(); save("catalog"); save("providers");
+  }
 }
 /* Metadata refresh + availability check. Re-reads every stored video, drops deleted ones (YouTube policy), updates embeddable/private/stats. */
 async function refreshProvider(p) {
@@ -609,7 +636,8 @@ function viewProvider(id) {
   const pls = cat ? Object.values(cat.playlists).sort((a, b) => a.title.localeCompare(b.title)) : [];
   return `<div class="wrap">${pageHead(p.name, p.lastSync ? `Last synced ${ago(p.lastSync)} · ${cat ? Object.keys(cat.videos).length : 0} videos` : "Not synced yet")}
     <div class="btns" style="margin:14px 0"><button class="btn primary small" data-act="sync" data-id="${esc(id)}">Sync new videos</button>
-      <button class="btn ghost small" data-act="syncfull" data-id="${esc(id)}">Full resync</button>
+      ${cat && cat.olderToken ? `<button class="btn ghost small" data-act="more" data-id="${esc(id)}">Load ${BATCH_LIMIT} older videos</button>` : ""}
+      <button class="btn danger small" data-act="stop" hidden>Stop</button>
       <button class="btn ghost small" data-act="refresh" data-id="${esc(id)}">Refresh metadata &amp; availability</button>
       <button class="btn ghost small" data-act="togprov" data-id="${esc(id)}">${p.enabled ? "Disable" : "Enable"}</button></div>
     <div class="log" id="synclog" ${S.syncLog.length ? "" : 'hidden'}>${esc(S.syncLog.join("\n"))}</div>
@@ -727,10 +755,12 @@ document.addEventListener("click", async e => {
   if (act === "wl") {
     e.preventDefault(); e.stopPropagation();
     S.watchlist = S.watchlist.includes(id) ? S.watchlist.filter(x => x !== id) : [id, ...S.watchlist]; save("watchlist"); rerender();
-  } else if (act === "sync" || act === "syncfull" || act === "refresh") {
-    const p = S.providers.find(x => x.id === id); document.querySelectorAll("[data-act]").forEach(b => b.disabled = true);
-    $("#synclog")?.removeAttribute("hidden"); S.syncLog = [];
-    await (act === "refresh" ? refreshProvider(p) : syncProvider(p, { full: act === "syncfull" })); rerender();
+  } else if (act === "stop") { cancelSync = true; el.disabled = true; toast("Stopping after the current request. Everything fetched so far is kept."); }
+  else if (act === "sync" || act === "more" || act === "refresh") {
+    if (!$("[data-act=stop]")) return; // only runs from a provider page
+    const p = S.providers.find(x => x.id === id); document.querySelectorAll("[data-act]:not([data-act=stop])").forEach(b => b.disabled = true);
+    $("[data-act=stop]").hidden = false; $("#synclog")?.removeAttribute("hidden"); S.syncLog = [];
+    await (act === "refresh" ? refreshProvider(p) : syncProvider(p, { more: act === "more" })); rerender();
     $("#synclog")?.removeAttribute("hidden"); const lg = $("#synclog"); if (lg) lg.textContent = S.syncLog.join("\n");
   } else if (act === "togprov") { const p = S.providers.find(x => x.id === id); p.enabled = !p.enabled; save("providers"); rerender(); }
   else if (act === "addprov") {
