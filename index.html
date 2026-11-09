@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
+  --bg-dim:.82; /* how dark the page background images are (0 = untouched, 1 = black). Raise it if text is hard to read. */
   --obsidian:#101116; --graphite:#191B23; --graphite2:#21242e; --porcelain:#E8E8ED;
   --violet:#9B79FF; --silver:#777C8B; --line:rgba(232,232,237,.08);
   --side:76px; --radius:14px;
@@ -32,7 +33,7 @@ nav.main a{display:flex;flex-direction:column;align-items:center;gap:2px;font-si
 nav.main a svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 nav.main a.on{color:var(--violet)}
 nav.main a.hide-m{display:none}
-main{padding:0 0 90px;min-height:100vh}
+main{position:relative;z-index:1;padding:0 0 90px;min-height:100vh}
 .wrap{padding:0 18px;max-width:1500px;margin:0 auto}
 @media(min-width:900px){
   nav.main{top:0;bottom:auto;right:auto;width:var(--side);height:100vh;flex-direction:column;justify-content:flex-start;align-items:center;
@@ -144,6 +145,12 @@ input:focus,select:focus,textarea:focus{border-color:var(--violet);outline:0}
 .watch h1{font:600 22px/1.25 var(--display);margin:16px 0 4px}
 .sidelist{max-height:640px;overflow:auto;padding-right:4px}
 
+/* Page backgrounds: two fixed layers that cross-fade. Only one image is ever loaded per page. */
+.bg{position:fixed;top:0;left:0;width:100%;height:100%;height:100lvh;z-index:0;pointer-events:none;opacity:0;transition:opacity .7s ease;
+  background:center / cover no-repeat}
+.bg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(16,17,22,calc(var(--bg-dim) - .06)),rgba(16,17,22,calc(var(--bg-dim) + .1)))}
+.bg.on{opacity:1}
+
 /* Dev notes */
 .field textarea{width:100%;min-height:110px;resize:vertical;line-height:1.5}
 .notes-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));margin-top:6px}
@@ -186,6 +193,7 @@ dialog::backdrop{background:rgba(0,0,0,.65);backdrop-filter:blur(4px)}
 </head>
 <body>
 <nav class="main" id="nav" aria-label="Main"></nav>
+<div id="bg0" class="bg" aria-hidden="true"></div><div id="bg1" class="bg" aria-hidden="true"></div>
 <main id="app" tabindex="-1"></main>
 <div id="toast" role="status" aria-live="polite"></div>
 <dialog id="dlg"></dialog>
@@ -234,7 +242,7 @@ const DEFAULT_PROVIDERS = [{
   id: "muse-asia", name: "Muse Asia", handle: "@MuseAsia", channelId: "", uploadsId: "", logo: "", enabled: true, lastSync: 0
 }];
 const S = {
-  settings: { apiKey: "", autoNext: true, resume: true, ...store.get("settings", {}) },
+  settings: { apiKey: "", autoNext: true, resume: true, backgrounds: true, ...store.get("settings", {}) },
   providers: store.get("providers", DEFAULT_PROVIDERS),
   catalog: {},                           // providerId -> { videos, playlists, syncedAt }. Lives in IndexedDB; loaded by initStorage()
   overrides: store.get("overrides", {}), // videoId -> manual corrections (preserved across syncs)
@@ -686,6 +694,45 @@ function downloadJson(obj, name, pretty) {
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
+/* ---------- 5c. Page backgrounds ----------
+   Images live next to this page, in backgrounds/<tab>/desktop.webp and backgrounds/<tab>/mobile.webp.
+   Phones and narrow windows try mobile.webp first, wide screens try desktop.webp first, and either one stands in for the other.
+   If a tab has no folder, backgrounds/default/ is tried, and if that is missing too the page stays plain.
+   A missing image is normal and harmless: the answer is remembered, so each file is asked for at most once. */
+const BG_DIR = "backgrounds";
+const BG_VERSION = 1; // raise this number after replacing an image under the same name, so browsers fetch the new one
+const BG_TABS = new Map([["", "home"], ["explore", "explore"], ["providers", "providers"], ["anime", "anime"], ["search", "search"],
+  ["watchlist", "watchlist"], ["history", "history"], ["notes", "devnotes"], ["settings", "settings"]]); // route -> folder. "watch" is left out on purpose
+const bgFound = new Map(); // url -> true/false
+let bgShown = "", bgToken = 0, bgFlip = 0, bgRoute = "";
+const bgMobile = () => typeof matchMedia === "function" && matchMedia("(max-width: 899px)").matches;
+function bgCandidates(folder) {
+  const order = bgMobile() ? ["mobile", "desktop"] : ["desktop", "mobile"];
+  return [folder, "default"].flatMap(f => order.map(n => `${BG_DIR}/${f}/${n}.webp?v=${BG_VERSION}`));
+}
+function probe(url) {
+  if (bgFound.has(url)) return Promise.resolve(bgFound.get(url));
+  if (typeof Image === "undefined") return Promise.resolve(false);
+  return new Promise(done => {
+    const img = new Image();
+    img.onload = () => { bgFound.set(url, true); done(true); };
+    img.onerror = () => { bgFound.set(url, false); done(false); };
+    img.src = url;
+  });
+}
+async function applyBackground(route = bgRoute) {
+  bgRoute = route; const token = ++bgToken, folder = BG_TABS.get(route);
+  const allowed = folder && S.settings.backgrounds !== false && navigator.connection?.saveData !== true; // respects the browser's data-saver mode
+  let url = "";
+  if (allowed) for (const c of bgCandidates(folder)) { if (await probe(c)) { url = c; break; } if (token !== bgToken) return; }
+  if (token !== bgToken || url === bgShown) return; // a newer page change took over, or nothing changed
+  bgShown = url;
+  const layers = [$("#bg0"), $("#bg1")];
+  if (url) { const next = layers[bgFlip ^ 1]; next.style.backgroundImage = `url("${url}")`; next.classList.add("on"); layers[bgFlip].classList.remove("on"); bgFlip ^= 1; }
+  else layers.forEach(l => l.classList.remove("on"));
+}
+if (typeof matchMedia === "function") matchMedia("(max-width: 899px)").addEventListener?.("change", () => applyBackground()); // rotate a phone or resize the window
+
 /* ---------- 6. Player (YouTube IFrame Player API) ---------- */
 let ytReady = null, player = null, tick = null, curVideo = null;
 function loadYT() {
@@ -968,6 +1015,8 @@ function viewSettings() {
   <div class="panel"><h3>Playback</h3>
     <label class="switch"><span>Play the next episode automatically</span><input type="checkbox" data-act="pref" data-k="autoNext" ${s.autoNext ? "checked" : ""}></label>
     <label class="switch"><span>Resume where I left off</span><input type="checkbox" data-act="pref" data-k="resume" ${s.resume ? "checked" : ""}></label></div>
+  <div class="panel"><h3>Appearance</h3>
+    <label class="switch"><span>Show page backgrounds</span><input type="checkbox" data-act="pref" data-k="backgrounds" ${s.backgrounds !== false ? "checked" : ""}></label></div>
   ${isAdmin() ? `<div class="panel"><h3>Publish my catalog</h3>
     <div class="btns"><button class="btn primary small" data-act="exportsnap">Export catalog.json</button><button class="btn ghost small" data-act="importsnap">Import catalog file</button></div>
     <input type="file" id="snapfile" accept=".json,application/json" hidden></div>` : ""}
@@ -987,6 +1036,7 @@ const BUILTIN_NOTES = [
   { at: "2026-11-09T05:03:00+08:00", title: "Playlist-first catalog", text: "Official playlists now decide the anime title, season and episode order. After each sync the app fetches only the playlist videos I don't have yet, so old episodes are found without scanning everything. Deleted or private videos are remembered and not asked for again." },
   { at: "2026-11-09T06:45:00+08:00", title: "Providers, Also-on links and publishing", text: "Added Edit and Remove for providers and links, handles or IDs when adding one. Added Also on links between providers (never merged), and Export catalog.json so visitors can browse without an API key. Management tools stay hidden when no key is saved." },
   { at: "2026-11-09T07:18:00+08:00", title: "Catalog moved to IndexedDB", text: "The catalog now lives in IndexedDB, which has far more room than localStorage. My old catalog moved over by itself on first open, and the app falls back to localStorage if a browser blocks IndexedDB." },
+  { at: "2026-11-09T14:40:00+08:00", title: "Dynamic page backgrounds", text: "Each tab can now have its own background, loaded from backgrounds/<tab>/desktop.webp and mobile.webp (devnotes is the first). Only the current tab's image is fetched, it fades in once ready, and missing files are skipped quietly. A dark overlay keeps text readable, with a switch in Settings to turn backgrounds off." },
   { at: "2026-11-09T13:48:00+08:00", title: "Dev Notes and clean-up", text: "Added this Dev Notes page and the copyright footer, and removed the helper texts I no longer need because this is my own project." }
 ].map((n, i) => ({ id: "built" + i, at: Date.parse(n.at), title: n.title, text: n.text, own: false }));
 
@@ -1003,6 +1053,7 @@ function viewNotes() {
       <li><b>YouTube is the source.</b> I save my API key in Settings, and Sync asks YouTube for a channel's uploads and official playlists, then stores only what is new.</li>
       <li><b>Playlists decide the structure.</b> A playlist gives the anime title, the season and the episode order. Video titles fill the gaps, and my manual corrections always win and survive every sync.</li>
       <li><b>Playback is YouTube's.</b> Videos play in YouTube's own player, because I never host or download anything.</li>
+      <li><b>Backgrounds are files, not code.</b> Images go in backgrounds/&lt;tab&gt;/desktop.webp and mobile.webp next to the page. Because they load only when a tab asks for them, the app stays light.</li>
       <li><b>Visitors need no key.</b> I export catalog.json and put it next to the page. Because it holds only public YouTube info, visitors can browse and watch, and their watchlist and history stay in their own browser.</li></ul></div>
     <div class="panel"><h3>Tech stack</h3><ul>
       <li><b>HTML, CSS and plain JavaScript.</b> No framework and no build step, so the whole app is one file I can deploy anywhere.</li>
@@ -1018,6 +1069,7 @@ function viewNotes() {
       <li>Add, edit, remove and disable providers, with Also on links</li>
       <li>Player with resume, previous and next, auto-next and clear errors for videos that can't play</li>
       <li>Watchlist, history, Continue Watching, search and Explore filters</li>
+      <li>Page backgrounds per tab, with separate desktop and mobile images</li>
       <li>Publish my catalog, backup export and these dev notes</li></ul></div>
   </div>
   <h2 class="sec-title">Milestones</h2>
@@ -1052,6 +1104,7 @@ function route() {
   const note = S.snapshotAt && $("#snapnote");
   if (note) note.textContent = `Catalog snapshot from ${new Date(S.snapshotAt).toLocaleDateString()}${Date.now() - S.snapshotAt > 30 * 864e5 ? ". It may be out of date." : "."}`;
   renderNav(path); if (!hash.includes("?s=")) scrollTo(0, 0);
+  applyBackground(r || "").catch(() => { /* a background is decoration, so never let it break a page */ });
   document.title = r === "anime" || r === "watch" ? `${buildLibrary().videos.get(arg)?.anime.title || buildLibrary().byId.get(arg)?.title || "MyCorner"} · MyCorner` : "MyCorner";
 }
 addEventListener("hashchange", route);
@@ -1131,7 +1184,7 @@ document.addEventListener("click", async e => {
 });
 document.addEventListener("change", e => {
   const el = e.target.closest("[data-act]"); if (!el) return; const { act, id, k } = el.dataset;
-  if (act === "pref") { S.settings[k] = el.checked; save("settings"); }
+  if (act === "pref") { S.settings[k] = el.checked; save("settings"); if (k === "backgrounds") applyBackground(); }
   else if (act === "plgroup") { S.ignoredPl[id] = !el.checked; save("ignoredPl"); invalidate(); toast("Grouping updated."); }
   else if (act === "fprov") { exploreProv = el.value; rerender(); }
   else if (act === "fsort") { exploreSort = el.value; rerender(); }
