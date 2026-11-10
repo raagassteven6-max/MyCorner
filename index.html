@@ -11,8 +11,9 @@
 :root{
   --bg-dim:.82; /* how dark the page background images are (0 = untouched, 1 = black). Raise it if text is hard to read. */
   --obsidian:#101116; --graphite:#191B23; --graphite2:#21242e; --porcelain:#E8E8ED;
-  --violet:#9B79FF; --silver:#777C8B; --line:rgba(232,232,237,.08);
-  --side:76px; --radius:14px;
+  --accent:#9B79FF; /* the one accent color: change this line to re-theme everything */
+  --violet:var(--accent); --silver:#777C8B; --line:rgba(232,232,237,.08);
+  --nav-h:64px; --radius:12px;
   --display:'Sora',system-ui,sans-serif; --body:'Inter',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0}
@@ -25,58 +26,77 @@ img{display:block;max-width:100%}
 :focus-visible{outline:2px solid var(--violet);outline-offset:2px;border-radius:6px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 
-/* Layout: sidebar on desktop, bottom bar on mobile */
-nav.main{position:fixed;z-index:50;background:rgba(16,17,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line);
+/* Layout: top bar on desktop, bottom bar on mobile */
+nav.main{position:fixed;z-index:50;background:rgba(16,17,22,.94);backdrop-filter:blur(14px);border-top:1px solid var(--line);
   bottom:0;left:0;right:0;display:flex;justify-content:space-around;padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
 nav.main .logo{display:none}
 nav.main a{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10.5px;color:var(--silver);padding:6px 8px;border-radius:10px;transition:color .2s}
 nav.main a svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-nav.main a.on{color:var(--violet)}
+nav.main a.on{color:var(--accent)}
 nav.main a.hide-m{display:none}
 main{position:relative;z-index:1;padding:0 0 90px;min-height:100vh}
 .wrap{padding:0 18px;max-width:1500px;margin:0 auto}
 @media(min-width:900px){
-  nav.main{top:0;bottom:auto;right:auto;width:var(--side);height:100vh;flex-direction:column;justify-content:flex-start;align-items:center;
-    gap:6px;border-top:0;border-right:1px solid var(--line);padding:18px 0}
-  nav.main .logo{display:grid;place-items:center;width:44px;height:44px;margin-bottom:18px;border-radius:12px;font:700 20px var(--display);
-    background:linear-gradient(135deg,var(--violet),#5d3fd3);color:#fff}
-  nav.main a{width:62px}
+  nav.main{top:0;bottom:auto;height:var(--nav-h);justify-content:flex-start;align-items:center;gap:4px;padding:0 40px;border-top:0;backdrop-filter:none;
+    background:linear-gradient(180deg,rgba(16,17,22,.96),rgba(16,17,22,.6) 70%,rgba(16,17,22,0))}
+  nav.main .logo{display:block;margin-right:28px;font:700 22px var(--display);letter-spacing:-.02em;color:var(--porcelain)}
+  nav.main .logo b{color:var(--accent);font-weight:700}
+  nav.main a{flex-direction:row;gap:0;font-size:14px;font-weight:500;padding:8px 12px;border-radius:0;border-bottom:2px solid transparent;color:#b9bccb}
+  nav.main a:hover{color:var(--porcelain)}
+  nav.main a svg{display:none}
+  nav.main a.icon svg{display:block;width:20px;height:20px}
+  nav.main a.icon span{display:none}
   nav.main a.hide-m{display:flex}
-  nav.main a.push{margin-top:auto}
-  main{margin-left:var(--side);padding-bottom:50px}
+  nav.main a.push{margin-left:auto}
+  nav.main a.on{color:var(--porcelain);border-bottom-color:var(--accent)}
+  main{padding:var(--nav-h) 0 50px}
   .wrap{padding:0 40px}
 }
 
-/* Hero */
-.hero{position:relative;min-height:min(78vh,620px);display:flex;align-items:flex-end;overflow:hidden;background:var(--graphite)}
-.hero .bg{position:absolute;inset:0;background-size:cover;background-position:center 25%;transform:scale(1.04);animation:drift 24s ease-in-out infinite alternate}
-.hero::after{content:"";position:absolute;inset:0;background:
-  linear-gradient(0deg,var(--obsidian) 4%,rgba(16,17,22,.55) 45%,rgba(16,17,22,.15)),
-  linear-gradient(90deg,rgba(16,17,22,.85),transparent 70%)}
-.hero .copy{position:relative;z-index:2;padding:90px 18px 44px;max-width:680px;animation:rise .8s both}
-@media(min-width:900px){.hero .copy{padding:90px 40px 60px}}
-.eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--violet);font-weight:600}
-.hero h1{font:700 clamp(30px,5.4vw,56px)/1.08 var(--display);margin:10px 0 12px;letter-spacing:-.02em}
-.hero p{color:#c4c6d0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-width:56ch}
+/* Hero (and the anime page header): artwork fades into the page, so a page background shows through */
+.hero,.detail-hero{position:relative;display:flex;align-items:flex-end;overflow:hidden}
+.hero{min-height:min(86vh,680px)}
+.detail-hero{min-height:420px}
+.hero .bg,.detail-hero .bg{position:absolute;inset:0;background-size:cover;background-position:center 22%;
+  -webkit-mask-image:linear-gradient(180deg,#000 50%,transparent 98%);mask-image:linear-gradient(180deg,#000 50%,transparent 98%)}
+.hero::after,.detail-hero::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(0deg,rgba(16,17,22,.72),rgba(16,17,22,.22));
+  -webkit-mask-image:linear-gradient(180deg,#000 55%,transparent 98%);mask-image:linear-gradient(180deg,#000 55%,transparent 98%)}
+.hero .copy,.detail-hero .copy{position:relative;z-index:2;padding:90px 18px 40px;max-width:680px;animation:rise .8s both}
+@media(min-width:900px){
+  .hero,.detail-hero{margin-top:calc(var(--nav-h) * -1)}
+  .hero .bg,.detail-hero .bg{
+    -webkit-mask-image:linear-gradient(90deg,transparent 10%,#000 60%),linear-gradient(180deg,#000 60%,transparent 98%);-webkit-mask-composite:source-in;
+    mask-image:linear-gradient(90deg,transparent 10%,#000 60%),linear-gradient(180deg,#000 60%,transparent 98%);mask-composite:intersect}
+  .hero::after,.detail-hero::after{background:linear-gradient(90deg,rgba(16,17,22,.72),rgba(16,17,22,.1) 55%,transparent)}
+  .hero .copy,.detail-hero .copy{padding:120px 40px 64px}
+}
+.eyebrow{display:inline-flex;gap:8px;align-items:center;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.new-badge{padding:2px 8px;border-radius:4px;background:var(--accent);color:#14102a;font-size:11px;letter-spacing:.1em;font-weight:700}
+.hero h1,.detail-hero h1{font:700 clamp(32px,5.6vw,60px)/1.05 var(--display);margin:10px 0 10px;letter-spacing:-.025em}
+.epline{font-weight:600;font-size:15px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60ch}
+.hero p,.detail-hero p{color:#c4c6d0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-width:58ch}
+.meta-line{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:12px;font-size:13px;color:#c4c6d0}
+.meta-line span+span::before{content:"\2022";margin-right:10px;color:var(--silver)}
 .btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:999px;font-weight:600;font-size:14px;transition:transform .15s,background .2s,border-color .2s}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:8px;font-weight:600;font-size:14px;transition:transform .15s,background .2s,border-color .2s}
 .btn:active{transform:scale(.97)}
 .btn.primary{background:var(--violet);color:#14102a}
 .btn.primary:hover{background:#b095ff}
 .btn.ghost{background:rgba(232,232,237,.08);border:1px solid var(--line)}
 .btn.ghost:hover{background:rgba(232,232,237,.14)}
 .btn.small{padding:7px 14px;font-size:13px}
+.btn.lg{padding:13px 28px;font-size:15px}
 .btn.danger{border:1px solid rgba(255,110,110,.4);color:#ff9a9a}
 .btn[disabled]{opacity:.5;pointer-events:none}
 
 /* Rows & cards */
-section.row{margin-top:34px;animation:rise .6s both}
+section.row{margin-top:40px;animation:rise .6s both}
 .row-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px}
-.row-head h2{font:600 19px var(--display);letter-spacing:-.01em}
-.row-head a{font-size:13px;color:var(--silver)}
+.row-head h2{font:700 14px var(--display);letter-spacing:.14em;text-transform:uppercase}
+.row-head a{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--silver)}
 .row-head a:hover{color:var(--violet)}
 .scroller{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x proximity;padding-bottom:8px;scrollbar-width:thin;scrollbar-color:var(--graphite2) transparent}
-.scroller>*{flex:0 0 min(72vw,270px);scroll-snap-align:start}
+.scroller>*{flex:0 0 min(78vw,300px);scroll-snap-align:start}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px}
 .card{position:relative;display:block;transition:transform .25s}
 .card:hover{transform:translateY(-4px)}
@@ -88,6 +108,14 @@ section.row{margin-top:34px;animation:rise .6s both}
 .thumb .bar i{display:block;height:100%;background:var(--violet)}
 .card h3{font:500 14px/1.35 var(--body);margin-top:9px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .meta{font-size:12px;color:var(--silver);margin-top:2px}
+.card .status{margin-top:10px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;color:var(--accent)}
+.card .status+h3{margin-top:2px}
+.thumb .logo-chip{position:absolute;top:8px;left:8px;z-index:2;width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--obsidian);border:1px solid var(--line);transform:none}
+.card:hover .thumb .logo-chip{transform:none}
+.logo-chip.txt{display:grid;place-items:center;font:700 11px var(--display);color:var(--accent)}
+.thumb .play{position:absolute;inset:0;display:grid;place-items:center;opacity:0;transition:opacity .2s;background:rgba(0,0,0,.34)}
+.thumb .play>span{width:46px;height:46px;border-radius:50%;background:rgba(255,255,255,.92);color:#111;display:grid;place-items:center;padding-left:3px}
+.card:hover .thumb .play,.card:focus-within .thumb .play{opacity:1}
 .heart{position:absolute;top:8px;right:8px;z-index:3;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:rgba(16,17,22,.7);backdrop-filter:blur(6px);opacity:0;transition:opacity .2s}
 .card:hover .heart,.heart.on,.heart:focus-visible{opacity:1}
 @media(hover:none){.heart{opacity:1}}
@@ -117,12 +145,6 @@ input:focus,select:focus,textarea:focus{border-color:var(--violet);outline:0}
 .empty h2{color:var(--porcelain);font:600 20px var(--display);margin-bottom:6px}
 
 /* Anime detail */
-.detail-hero{position:relative;min-height:380px;display:flex;align-items:flex-end;overflow:hidden}
-.detail-hero .bg{position:absolute;inset:0;background-size:cover;background-position:center 20%;filter:saturate(1.1)}
-.detail-hero::after{content:"";position:absolute;inset:0;background:linear-gradient(0deg,var(--obsidian) 6%,rgba(16,17,22,.6) 60%,rgba(16,17,22,.3))}
-.detail-hero .copy{position:relative;z-index:2;padding:80px 18px 28px;max-width:760px}
-@media(min-width:900px){.detail-hero .copy{padding:80px 40px 34px}}
-.detail-hero h1{font:700 clamp(28px,4.6vw,46px)/1.1 var(--display);letter-spacing:-.02em;margin:8px 0}
 .seasonbar{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 14px}
 .eplist{display:grid;gap:10px}
 .ep{display:grid;grid-template-columns:120px 1fr auto;gap:14px;align-items:center;padding:8px;border-radius:12px;border:1px solid transparent;transition:background .2s}
@@ -151,6 +173,27 @@ input:focus,select:focus,textarea:focus{border-color:var(--violet);outline:0}
 .pagebg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(16,17,22,calc(var(--bg-dim) - .06)),rgba(16,17,22,calc(var(--bg-dim) + .1)))}
 .pagebg.on{opacity:1}
 
+/* Home: banner and text lists */
+.banner{position:relative;display:flex;align-items:flex-end;min-height:320px;border-radius:var(--radius);overflow:hidden;border:1px solid var(--line);background:var(--graphite)}
+.bn-img{position:absolute;inset:0;background-size:cover;background-position:center 25%;
+  -webkit-mask-image:linear-gradient(0deg,transparent,#000 60%);mask-image:linear-gradient(0deg,transparent,#000 60%)}
+@media(min-width:900px){.banner{min-height:380px}
+  .bn-img{-webkit-mask-image:linear-gradient(90deg,transparent 15%,#000 70%);mask-image:linear-gradient(90deg,transparent 15%,#000 70%)}}
+.banner::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(0deg,rgba(16,17,22,.92),rgba(16,17,22,.45) 60%,rgba(16,17,22,.1))}
+@media(min-width:900px){.banner::after{background:linear-gradient(90deg,rgba(16,17,22,.9),rgba(16,17,22,.4) 55%,transparent)}}
+.bn-copy{position:relative;z-index:2;padding:30px;max-width:560px}
+.bn-copy h3{font:700 clamp(24px,3.4vw,36px)/1.1 var(--display);letter-spacing:-.02em;margin:8px 0}
+.bn-copy p{color:#c4c6d0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.picks{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
+.pick{display:flex;align-items:center;gap:6px;padding:6px 8px 6px 16px;background:var(--graphite);border:1px solid var(--line);border-radius:var(--radius);transition:border-color .2s,transform .2s}
+.pick:hover{border-color:rgba(155,121,255,.5);transform:translateY(-2px)}
+.pk-main{display:flex;flex:1;gap:14px;min-width:0;align-items:center;padding:8px 0}
+.pk-n{font:700 22px var(--display);color:var(--accent);width:26px;flex:none}
+.pk-body{display:grid;gap:2px;min-width:0}
+.pk-body b{font-weight:600}
+.pk-body span{font-size:12.5px;color:var(--silver);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pk-go{font:700 12px var(--body);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);padding:10px 12px}
+
 /* Dev notes */
 .field textarea{width:100%;min-height:110px;resize:vertical;line-height:1.5}
 .notes-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));margin-top:6px}
@@ -178,8 +221,14 @@ input:focus,select:focus,textarea:focus{border-color:var(--violet);outline:0}
 .copyright strong{font:600 12.5px var(--display);letter-spacing:.08em;color:var(--porcelain)}
 
 /* Misc */
-footer{margin-top:60px;padding:24px 18px;border-top:1px solid var(--line);color:var(--silver);font-size:12px;text-align:center}
-footer a{text-decoration:underline}
+footer{margin-top:70px;padding:34px 18px 26px;border-top:1px solid var(--line);color:var(--silver);font-size:12.5px;text-align:center;display:grid;gap:14px;justify-items:center}
+footer .ft-logo{font:700 20px var(--display);color:var(--porcelain)}
+footer .ft-logo b{color:var(--accent)}
+footer p{max-width:62ch}
+footer .ft-links{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 14px}
+footer a{text-decoration:underline;text-underline-offset:3px}
+footer .ft-logo{text-decoration:none}
+footer .copyright{width:100%;max-width:520px}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);z-index:99;background:var(--graphite2);border:1px solid var(--line);
   padding:10px 18px;border-radius:12px;opacity:0;pointer-events:none;transition:.3s;max-width:88vw;white-space:pre-line;font-size:13.5px}
 #toast.on{opacity:1;transform:translateX(-50%)}
@@ -825,34 +874,66 @@ const ICON = {
   play: '<path d="M7 4l13 8-13 8z" fill="currentColor" stroke="none"/>'
 };
 const svg = (n, extra = "") => `<svg viewBox="0 0 24 24" aria-hidden="true" ${extra}>${ICON[n]}</svg>`;
-const NAV = [["#/", "Home", "home"], ["#/explore", "Explore", "compass"], ["#/providers", "Providers", "grid"], ["#/search", "Search", "search"],
-  ["#/watchlist", "Watchlist", "bookmark", "hide-m"], ["#/history", "History", "clock", "hide-m"], ["#/notes", "Dev Notes", "note"], ["#/settings", "Settings", "gear", "push"]];
+const NAV = [["#/", "Home", "home"], ["#/explore", "Explore", "compass"], ["#/providers", "Providers", "grid"],
+  ["#/watchlist", "Watchlist", "bookmark", "hide-m"], ["#/history", "History", "clock", "hide-m"], ["#/notes", "Dev Notes", "note"],
+  ["#/search", "Search", "search", "push icon"], ["#/settings", "Settings", "gear", "icon"]];
 function renderNav(route) {
-  $("#nav").innerHTML = `<a class="logo" href="#/" aria-label="MyCorner home">M</a>` +
-    NAV.filter(([h]) => h !== "#/notes" || isAdmin()).map(([h, l, i, c = ""]) => `<a class="${c} ${route === h || (h !== "#/" && route.startsWith(h)) ? "on" : ""}" href="${h}">${svg(i)}<span>${l}</span></a>`).join("");
+  $("#nav").innerHTML = `<a class="logo" href="#/" aria-label="MyCorner home">My<b>Corner</b></a>` +
+    NAV.filter(([h]) => h !== "#/notes" || isAdmin()).map(([h, l, i, c = ""]) => `<a class="${c} ${route === h || (h !== "#/" && route.startsWith(h)) ? "on" : ""}" href="${h}" aria-label="${l}">${svg(i)}<span>${l}</span></a>`).join("");
 }
-const FOOTER = `<footer>MyCorner is a personal project. All video is streamed from official YouTube channels through the YouTube player and is not hosted here.<br>
-  This site uses <a href="https://developers.google.com/youtube/terms/api-services-terms-of-service" target="_blank" rel="noopener">YouTube API Services</a> ·
-  <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a> ·
-  <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a><br><span id="snapnote"></span>
+const FOOTER = `<footer><a class="ft-logo" href="#/">My<b>Corner</b></a>
+  <p>MyCorner is a personal project. All video is streamed from official YouTube channels through the YouTube player and is not hosted here.</p>
+  <div class="ft-links"><span>This site uses</span> <a href="https://developers.google.com/youtube/terms/api-services-terms-of-service" target="_blank" rel="noopener">YouTube API Services</a>
+  <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a>
+  <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a></div><span id="snapnote"></span>
   <div class="copyright"><span>&copy; 2026 All rights reserved.</span><span class="dot" aria-hidden="true"></span><span>Developed by <strong>Steven Edward R.</strong></span></div></footer>`;
 
 function heartBtn(id) {
   const on = S.watchlist.includes(id);
   return `<button class="heart ${on ? "on" : ""}" data-act="wl" data-id="${esc(id)}" aria-label="${on ? "Remove from" : "Add to"} watchlist" aria-pressed="${on}">${svg("heart")}</button>`;
 }
+const provById = id => S.providers.find(p => p.id === id);
+const isNew = a => Date.now() - a.latest < 14 * 864e5;
+const epLabel = i => i.ep != null && i.type === "episode" ? `S${i.season} · E${i.ep}` : TYPE_LABEL[i.type];
+const playBtn = `<span class="play" aria-hidden="true"><span>${svg("play", 'width="18" height="18"')}</span></span>`;
+/* Small round provider logo on every card. Falls back to the provider's first letter when no logo is stored. */
+function logoChip(a) {
+  const p = provById(a.providerId);
+  return p?.logo ? `<img class="logo-chip" loading="lazy" src="${esc(p.logo)}" alt="" title="${esc(a.provider)}">`
+    : `<span class="logo-chip txt" title="${esc(a.provider)}">${esc((a.provider || "?").trim().charAt(0).toUpperCase())}</span>`;
+}
+function metaLine(a) {
+  const n = a.episodes.length, pubs = a.items.map(i => i.pub).filter(Boolean);
+  return [a.provider, n ? `${n} episode${n > 1 ? "s" : ""}` : `${a.items.length} video${a.items.length > 1 ? "s" : ""}`,
+    a.seasons.length > 1 ? `${a.seasons.length} seasons` : "", pubs.length ? new Date(Math.min(...pubs)).getFullYear() : ""]
+    .filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("");
+}
 function animeCard(a) {
   const n = a.episodes.length;
   return `<div class="card">${heartBtn(a.id)}<a href="#/anime/${encodeURIComponent(a.id)}" aria-label="${esc(a.title)}">
-    <div class="thumb">${a.thumb ? `<img loading="lazy" src="${esc(a.thumb)}" alt="">` : ""}<span class="tag">${esc(a.provider)}</span></div>
+    <div class="thumb">${a.thumb ? `<img loading="lazy" src="${esc(a.thumb)}" alt="">` : ""}${logoChip(a)}${playBtn}</div>
+    ${isNew(a) ? '<div class="status">New</div>' : ""}
     <h3>${esc(a.title)}</h3><div class="meta">${n ? `${n} episode${n > 1 ? "s" : ""}` : `${a.items.length} video${a.items.length > 1 ? "s" : ""}`} · ${ago(a.latest)}</div></a></div>`;
 }
-function resumeCard({ item, anime }, h) {
-  const pct = h.dur ? Math.min(100, h.pos / h.dur * 100) : 0;
-  return `<a class="card" href="#/watch/${esc(item.videoId)}"><div class="thumb">${item.th ? `<img loading="lazy" src="${esc(item.th)}" alt="">` : ""}
-    <span class="tag">${item.ep != null ? `S${item.season} · E${item.ep}` : TYPE_LABEL[item.type]}</span><div class="bar"><i style="width:${pct}%"></i></div></div>
-    <h3>${esc(anime.title)}</h3><div class="meta">${fmtDur(h.pos)} of ${fmtDur(h.dur)}</div></a>`;
+/* One video as a card. h = saved playback position (or null), label = the small status line above the title. */
+function resumeCard({ item, anime }, h, label) {
+  const pct = h?.dur ? Math.min(100, h.pos / h.dur * 100) : 0;
+  return `<a class="card" href="#/watch/${esc(item.videoId)}"><div class="thumb">${item.th ? `<img loading="lazy" src="${esc(item.th)}" alt="">` : ""}${logoChip(anime)}${playBtn}
+    ${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ""}</div>
+    <div class="status">${esc(label)}</div><h3>${esc(anime.title)}</h3><div class="meta">${esc(epLabel(item))}${h && h.dur ? ` · ${fmtDur(h.pos)} of ${fmtDur(h.dur)}` : ""}</div></a>`;
 }
+function banner(a) {
+  const first = a.episodes[0] || a.items[0];
+  return `<section class="row"><div class="wrap"><div class="row-head"><h2>New on MyCorner</h2></div>
+    <div class="banner"><div class="bn-img" style="background-image:url('${esc(a.thumb)}')"></div><div class="bn-copy">
+      <span class="eyebrow">${esc(a.provider)}</span><h3>${esc(a.title)}</h3><p>${esc(a.synopsis || "Now streaming on the official channel.")}</p><div class="meta-line">${metaLine(a)}</div>
+      <div class="btns"><a class="btn primary" href="#/watch/${esc(first.videoId)}">${svg("play", 'width="16" height="16"')} Play</a>
+      <a class="btn ghost" href="#/anime/${encodeURIComponent(a.id)}">Details</a></div></div></div></div></section>`;
+}
+/* Numbered text list with a PLAY link, like the template's "picks" blocks. */
+const picks = list => `<div class="picks">${list.map((a, i) => `<div class="pick"><a class="pk-main" href="#/anime/${encodeURIComponent(a.id)}">
+    <span class="pk-n">${i + 1}</span><span class="pk-body"><b>${esc(a.title)}</b><span>${esc(a.synopsis || metaLine(a).replace(/<[^>]+>/g, " "))}</span></span></a>
+    <a class="pk-go" href="#/watch/${esc((a.episodes[0] || a.items[0]).videoId)}">Play</a></div>`).join("")}</div>`;
 const row = (title, html, link = "") => html ? `<section class="row"><div class="wrap"><div class="row-head"><h2>${esc(title)}</h2>${link}</div><div class="scroller">${html}</div></div></section>` : "";
 function continueList() {
   const lib = buildLibrary(), best = new Map();
@@ -862,6 +943,27 @@ function continueList() {
     if (!best.has(rec.anime.id) || best.get(rec.anime.id)[1].at < h.at) best.set(rec.anime.id, [rec, h]);
   }
   return [...best.values()].sort((a, b) => b[1].at - a[1].at);
+}
+/* The "Continue Watching" row: unfinished episodes, then the next episode after one you finished, then watchlist titles you haven't started. */
+function keepWatching() {
+  const lib = buildLibrary(), out = [], seen = new Set();
+  const live = anime => provById(anime.providerId)?.enabled;
+  for (const [rec, h] of continueList()) if (live(rec.anime)) { out.push({ rec, h, label: "Resume Episode", at: h.at }); seen.add(rec.anime.id); }
+  const latest = new Map();
+  for (const [vid, h] of Object.entries(S.history)) {
+    const rec = lib.videos.get(vid); if (!rec || !live(rec.anime)) continue;
+    const cur = latest.get(rec.anime.id); if (!cur || cur.h.at < h.at) latest.set(rec.anime.id, { rec, h });
+  }
+  for (const [aid, { rec, h }] of latest) {
+    if (seen.has(aid) || !h.dur || h.pos <= h.dur * .92) continue;
+    const { next } = neighbours(rec.item.videoId);
+    if (next) { out.push({ rec: { item: next, anime: rec.anime }, h: null, label: "Watch Next Episode", at: h.at }); seen.add(aid); }
+  }
+  for (const id of S.watchlist) {
+    const a = lib.byId.get(id); if (!a || seen.has(id) || !live(a) || a.items.some(i => S.history[i.videoId])) continue;
+    out.push({ rec: { item: a.episodes[0] || a.items[0], anime: a }, h: null, label: "Start Watching", at: 0 });
+  }
+  return out.sort((x, y) => y.at - x.at).slice(0, 14);
 }
 function setupPanel() {
   const hasKey = !!S.settings.apiKey, synced = S.providers.some(p => p.lastSync);
@@ -874,20 +976,26 @@ function viewHome() {
   const all = enabledAnime();
   if (!all.length) return setupPanel() + FOOTER;
   const feat = all.find(a => a.episodes.length > 1 && a.synopsis) || all[0];
+  const start = feat.episodes.find(e => S.history[e.videoId]) || feat.episodes[0] || feat.items[0];
   const hero = `<section class="hero"><div class="bg" style="background-image:url('${esc(feat.thumb)}')"></div><div class="copy">
-    <span class="eyebrow">Featured · ${esc(feat.provider)}</span><h1>${esc(feat.title)}</h1><p>${esc(feat.synopsis || "Now streaming on the official channel.")}</p>
-    <div class="btns"><a class="btn primary" href="#/watch/${esc((feat.episodes[0] || feat.items[0]).videoId)}">${svg("play", 'width="16" height="16"')} Watch Now</a>
-    <a class="btn ghost" href="#/anime/${encodeURIComponent(feat.id)}">View Details</a></div></div></section>`;
-  const cont = continueList().map(([r, h]) => resumeCard(r, h)).join("");
+    <span class="eyebrow">Now streaming${isNew(feat) ? '<span class="new-badge">New</span>' : ""}</span><h1>${esc(feat.title)}</h1>
+    <div class="epline">${S.history[start.videoId] ? "Continue · " : ""}${esc(epLabel(start))} – ${esc(start.t)}</div>
+    <p>${esc(feat.synopsis || "Now streaming on the official channel.")}</p><div class="meta-line">${metaLine(feat)}</div>
+    <div class="btns"><a class="btn primary lg" href="#/watch/${esc(start.videoId)}">${svg("play", 'width="16" height="16"')} Play</a>
+    <a class="btn ghost lg" href="#/anime/${encodeURIComponent(feat.id)}">Details</a></div></div></section>`;
+  const keep = keepWatching().map(k => resumeCard(k.rec, k.h, k.label)).join("");
   const lib = buildLibrary(), wl = S.watchlist.map(id => lib.byId.get(id)).filter(Boolean);
+  const extras = all.flatMap(a => a.items.filter(i => ["movie", "special", "ova"].includes(i.type)).map(i => ({ item: i, anime: a })))
+    .sort((x, y) => y.item.pub - x.item.pub).slice(0, 14).map(r => resumeCard(r, null, TYPE_LABEL[r.item.type])).join("");
+  const spot = all.find(a => a !== feat);
   const perProvider = S.providers.filter(p => p.enabled).map(p => {
-    const mine = all.filter(a => a.providerId === p.id);
-    const popular = [...mine].sort((a, b) => b.views - a.views).slice(0, 12);
-    return row(`Popular on ${p.name}`, popular.map(animeCard).join(""), `<a href="#/providers/${esc(p.id)}">View catalog</a>`);
+    const top = all.filter(a => a.providerId === p.id).sort((a, b) => b.views - a.views).slice(0, 4);
+    return top.length ? `<section class="row"><div class="wrap"><div class="row-head"><h2>Popular on ${esc(p.name)}</h2><a href="#/providers/${esc(p.id)}">View All</a></div>${picks(top)}</div></section>` : "";
   }).join("");
-  return hero + row("Continue Watching", cont) +
-    row("Recently Added", all.slice(0, 14).map(animeCard).join(""), `<a href="#/explore">Explore all</a>`) + perProvider +
-    row("Your Watchlist", wl.slice(0, 14).map(animeCard).join(""), `<a href="#/watchlist">Open watchlist</a>`) + FOOTER;
+  return hero + row("Continue Watching", keep) +
+    row("Recently Added", all.slice(0, 14).map(animeCard).join(""), `<a href="#/explore">View All</a>`) +
+    row("Movies & Specials", extras, `<a href="#/explore">View All</a>`) + (spot ? banner(spot) : "") + perProvider +
+    row("Your Watchlist", wl.slice(0, 14).map(animeCard).join(""), `<a href="#/watchlist">View All</a>`) + FOOTER;
 }
 function grid(list, emptyMsg) {
   return list.length ? `<div class="grid">${list.map(animeCard).join("")}</div>` :
@@ -953,9 +1061,9 @@ function viewAnime(id) {
       ${related.map(x => `<a class="chip" href="#/anime/${encodeURIComponent(x.id)}">${esc(x.provider)}${normKey(x.title) === normKey(a.title) ? "" : " · " + esc(x.title)}</a>${admin && manual.has(x.id) ? `<button class="chip" data-act="unlink" data-id="${esc(a.id)}" data-other="${esc(x.id)}" aria-label="Remove link to ${esc(x.provider)}">×</button>` : ""}`).join("")}
       ${canLink ? `<button class="chip" data-act="link" data-id="${esc(a.id)}">+ Link to another provider</button>` : ""}</div>` : "";
   return `<section class="detail-hero"><div class="bg" style="background-image:url('${esc(a.thumb)}')"></div><div class="copy">
-      <span class="eyebrow">${esc(a.provider)}</span><h1>${esc(a.title)}</h1><p class="muted" style="color:#c4c6d0;max-width:60ch">${esc(a.synopsis)}</p>
-      <div class="btns"><a class="btn primary" href="#/watch/${esc(first.videoId)}">${svg("play", 'width="16" height="16"')} ${S.history[first.videoId] ? "Continue" : "Watch Now"}</a>
-      <button class="btn ghost" data-act="wl" data-id="${esc(a.id)}">${S.watchlist.includes(a.id) ? "Remove from Watchlist" : "Add to Watchlist"}</button></div></div></section>
+      <span class="eyebrow">${esc(a.provider)}${isNew(a) ? '<span class="new-badge">New</span>' : ""}</span><h1>${esc(a.title)}</h1><p>${esc(a.synopsis)}</p><div class="meta-line">${metaLine(a)}</div>
+      <div class="btns"><a class="btn primary lg" href="#/watch/${esc(first.videoId)}">${svg("play", 'width="16" height="16"')} ${S.history[first.videoId] ? "Continue" : "Watch Now"}</a>
+      <button class="btn ghost lg" data-act="wl" data-id="${esc(a.id)}">${S.watchlist.includes(a.id) ? "Remove from Watchlist" : "Add to Watchlist"}</button></div></div></section>
     <div class="wrap">${a.seasons.length > 1 ? `<div class="seasonbar">${a.seasons.map(s => `<a class="chip ${s === season ? "on" : ""}" href="#/anime/${encodeURIComponent(id)}?s=${s}">Season ${s}</a>`).join("")}</div>` : '<div style="height:22px"></div>'}
     ${alsoOn}
     ${srcPl.length ? `<p class="muted">Grouped from playlist${srcPl.length > 1 ? "s" : ""}: ${esc(srcPl.join(" · "))}</p>` : ""}
@@ -1036,6 +1144,7 @@ const BUILTIN_NOTES = [
   { at: "2026-11-09T05:03:00+08:00", title: "Playlist-first catalog", text: "Official playlists now decide the anime title, season and episode order. After each sync the app fetches only the playlist videos I don't have yet, so old episodes are found without scanning everything. Deleted or private videos are remembered and not asked for again." },
   { at: "2026-11-09T06:45:00+08:00", title: "Providers, Also-on links and publishing", text: "Added Edit and Remove for providers and links, handles or IDs when adding one. Added Also on links between providers (never merged), and Export catalog.json so visitors can browse without an API key. Management tools stay hidden when no key is saved." },
   { at: "2026-11-09T07:18:00+08:00", title: "Catalog moved to IndexedDB", text: "The catalog now lives in IndexedDB, which has far more room than localStorage. My old catalog moved over by itself on first open, and the app falls back to localStorage if a browser blocks IndexedDB." },
+  { at: "2026-11-11T06:45:00+08:00", title: "Hulu-style redesign", text: "Changed the whole look to follow a Hulu-style template: a top navigation bar, a large Now Streaming hero with the artwork fading into the page, a Continue Watching row with Resume, Watch Next and Start Watching labels, card hover play buttons, a New on MyCorner banner, numbered Popular lists with Play links, and a new footer. Only the screens and styling changed. The sync, storage, catalog, providers, snapshot and background code were not touched." },
   { at: "2026-11-09T14:55:00+08:00", title: "Fixed the missing hero photo", text: "After adding page backgrounds, the featured photo on Home and the header photo on anime pages disappeared. Both layers used the same CSS class name (bg), so the new rule hid the old one. The background layers now use their own name (pagebg), and both photos are back." },
   { at: "2026-11-09T14:40:00+08:00", title: "Dynamic page backgrounds", text: "Each tab can now have its own background, loaded from backgrounds/<tab>/desktop.webp and mobile.webp (devnotes is the first). Only the current tab's image is fetched, it fades in once ready, and missing files are skipped quietly. A dark overlay keeps text readable, with a switch in Settings to turn backgrounds off." },
   { at: "2026-11-09T13:48:00+08:00", title: "Dev Notes and clean-up", text: "Added this Dev Notes page and the copyright footer, and removed the helper texts I no longer need because this is my own project." }
@@ -1070,6 +1179,7 @@ function viewNotes() {
       <li>Add, edit, remove and disable providers, with Also on links</li>
       <li>Player with resume, previous and next, auto-next and clear errors for videos that can't play</li>
       <li>Watchlist, history, Continue Watching, search and Explore filters</li>
+      <li>Hulu-style layout: top bar, hero, row carousels, banner and numbered lists</li>
       <li>Page backgrounds per tab, with separate desktop and mobile images</li>
       <li>Publish my catalog, backup export and these dev notes</li></ul></div>
   </div>
