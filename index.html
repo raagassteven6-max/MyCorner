@@ -373,15 +373,26 @@ async function yt(endpoint, params, { retries = 2 } = {}) {
   const hit = ytCache.get(url);
   if (hit && Date.now() - hit.at < 60000) return hit.data;
   for (let attempt = 0; ; attempt++) {
-    let res;
-    try { res = await fetch(url); }
-    catch {
+    // A request that never answers would freeze the whole sync, so every attempt gets 30 seconds, then counts as a network failure.
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 30000);
+    let res, body;
+    try {
+      res = await fetch(url, { signal: ctl.signal });
+      try { body = await res.json(); } catch (e) { if (ctl.signal.aborted) throw e; body = null; }
+    } catch {
+      clearTimeout(timer);
       if (attempt < retries) { await sleep(800 * 2 ** attempt); continue; }
-      throw new ApiError("Could not reach YouTube.\nCheck your internet connection and try again.", "network");
+      throw new ApiError("Could not reach YouTube.\nIt did not answer in time or the connection failed. Check your internet connection and try again.", "network");
     }
-    if (res.ok) { quotaUsed++; const data = await res.json(); ytCache.set(url, { at: Date.now(), data }); return data; }
-    const body = await res.json().catch(() => ({}));
+    clearTimeout(timer);
+    if (res.ok) {
+      if (!body) throw new ApiError("YouTube sent a reply that could not be read.\nTry again in a moment.", "http");
+      quotaUsed++; ytCache.set(url, { at: Date.now(), data: body }); return body;
+    }
+    body = body || {};
     const reason = body?.error?.errors?.[0]?.reason || "";
+    // Short bursts of requests can trip a rate limit that is separate from the daily quota. Waiting briefly fixes it.
+    if ((res.status === 403 || res.status === 429) && /ratelimit/i.test(reason) && attempt < 4) { await sleep(1500 * 2 ** attempt); continue; }
     if (res.status >= 500 && attempt < retries) { await sleep(800 * 2 ** attempt); continue; }
     if (reason === "quotaExceeded" || reason === "dailyLimitExceeded")
       throw new ApiError("YouTube's daily quota for your API key is used up.\nIt resets at midnight Pacific Time. Your saved catalog still works, so you can sync again tomorrow.", "quota");
@@ -507,20 +518,34 @@ async function syncProvider(p, { more = false } = {}) {
     } while (token && pls.length < 500 && !cancelSync);
     const live = new Set(pls.map(x => x.id));
     for (const id of Object.keys(cat.playlists)) if (!live.has(id)) delete cat.playlists[id];
-    let touched = 0;
-    for (const pl of pls) {
-      if (cancelSync) break;
-      const old = cat.playlists[pl.id], n = pl.contentDetails.itemCount;
-      if (old && old.count === n) continue;
-      const items = []; let t2 = "";
-      if (n > 0) do {
-        const r = await yt("playlistItems", { part: "contentDetails", playlistId: pl.id, maxResults: 50, ...(t2 && { pageToken: t2 }) });
-        items.push(...(r.items || []).map(i => i.contentDetails.videoId)); t2 = r.nextPageToken;
-      } while (t2 && !cancelSync);
-      cat.playlists[pl.id] = { id: pl.id, title: pl.snippet.title, count: n, items };
-      touched++; if (touched % 10 === 0) { save("catalog"); log(`Playlists updated so far: ${touched}`); }
-    }
-    log(`Playlists: ${pls.length} found, ${touched} updated.`);
+    // Only playlists whose video count changed are read again. A few are read at the same time so channels with
+    // hundreds of playlists finish in minutes, and progress is reported and saved as it goes.
+    const todo = pls.filter(pl => { const old = cat.playlists[pl.id]; return !(old && old.count === pl.contentDetails.itemCount); });
+    log(`Playlists: ${pls.length} found, ${todo.length} to read, ${pls.length - todo.length} unchanged.`);
+    let touched = 0, done = 0, skipped = 0, next = 0, fatal = null;
+    const worker = async () => {
+      while (!cancelSync && !fatal) {
+        const pl = todo[next++]; if (!pl) return;
+        try {
+          const items = []; let t2 = "";
+          if (pl.contentDetails.itemCount > 0) do {
+            const r = await yt("playlistItems", { part: "contentDetails", playlistId: pl.id, maxResults: 50, ...(t2 && { pageToken: t2 }) });
+            items.push(...(r.items || []).map(i => i.contentDetails.videoId)); t2 = r.nextPageToken;
+          } while (t2 && !cancelSync);
+          if (cancelSync) return; // half-read list: do not store it as if it were complete
+          cat.playlists[pl.id] = { id: pl.id, title: pl.snippet.title, count: pl.contentDetails.itemCount, items };
+          touched++;
+        } catch (e) {
+          if (e instanceof ApiError && e.code === "http") { skipped++; log(`Skipped playlist "${pl.snippet.title}" (it will be tried again next sync).\n${e.message}`); }
+          else { fatal = e; return; }
+        }
+        done++;
+        if (done % 5 === 0 || done === todo.length) { save("catalog"); log(`Playlists read: ${done} of ${todo.length}.`); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, todo.length) }, worker));
+    if (fatal) throw fatal;
+    log(`Playlists: ${touched} updated${skipped ? `, ${skipped} skipped` : ""}.`);
     if (!cancelSync) await fillPlaylistGaps(cat);
     cat.syncedAt = p.lastSync = Date.now();
     log(cancelSync ? "Stopped by you. Everything fetched so far was saved." : "Sync finished.");
