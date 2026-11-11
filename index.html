@@ -277,9 +277,12 @@ function isoToSec(iso = "") {
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/) || [];
   return (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0);
 }
+/* Calendar days in the viewer's own time zone: anything dated earlier today is "today", the day before is "yesterday".
+   (Counting 24-hour blocks instead made last night's items read "today".) */
 const ago = ts => {
-  const d = (Date.now() - ts) / 864e5;
-  return d < 1 ? "today" : d < 2 ? "yesterday" : d < 30 ? `${Math.floor(d)} days ago` : new Date(ts).toLocaleDateString();
+  const day = t => { const x = new Date(t); return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+  const d = Math.round((day(Date.now()) - day(ts)) / 864e5);
+  return d <= 0 ? "today" : d === 1 ? "yesterday" : d < 30 ? `${d} days ago` : new Date(ts).toLocaleDateString();
 };
 
 /* ---------- 2. State (everything personal stays in this browser) ---------- */
@@ -364,7 +367,8 @@ const invalidate = () => { libCache = null; };
 
 /* ---------- 3. YouTube Data API v3 (quota-aware) ---------- */
 class ApiError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
-let quotaUsed = 0, cancelSync = false; // quotaUsed counts requests this session (each costs 1 unit here)
+// quotaUsed counts requests this session (each costs 1 unit here). addStamp is the one "added" time shared by every video a sync run adds.
+let quotaUsed = 0, cancelSync = false, addStamp = 0;
 const ytCache = new Map(); // short-lived in-memory cache for identical requests
 async function yt(endpoint, params, { retries = 2 } = {}) {
   if (!S.settings.apiKey) throw new ApiError("No YouTube API key is set.\nOpen Settings and paste your key first.", "nokey");
@@ -418,7 +422,7 @@ function compactVideo(v) {
     th: bestThumb(v.snippet?.thumbnails), pub: Date.parse(v.snippet?.publishedAt) || 0,
     dur: isoToSec(v.contentDetails?.duration), emb: v.status?.embeddable !== false,
     priv: v.status?.privacyStatus || "public", rr: v.contentDetails?.regionRestriction || null,
-    vc: +v.statistics?.viewCount || 0, at: Date.now()
+    vc: +v.statistics?.viewCount || 0, at: addStamp || Date.now()
   };
 }
 async function fetchVideos(ids) {
@@ -493,7 +497,7 @@ async function fillPlaylistGaps(cat) {
   if (gone) log(`${gone} listed video(s) are deleted or private, so they were skipped.`);
 }
 async function syncProvider(p, { more = false } = {}) {
-  S.syncLog = []; cancelSync = false; const startQuota = quotaUsed;
+  S.syncLog = []; cancelSync = false; addStamp = Date.now(); const startQuota = quotaUsed;
   const cat = S.catalog[p.id] ||= { videos: {}, playlists: {}, syncedAt: 0, olderToken: "", complete: false };
   let worked = false; // set once this run has actually reached YouTube's data, so a Stop or a later error still records the sync time
   try {
@@ -561,7 +565,7 @@ async function syncProvider(p, { more = false } = {}) {
   } finally {
     if (worked) cat.syncedAt = p.lastSync = Date.now();
     log(`About ${quotaUsed - startQuota} quota unit(s) used in this run (your daily limit is 10,000).`);
-    cancelSync = false; // a finished or stopped run must not leave the flag set for the next request the app makes
+    addStamp = 0; cancelSync = false; // a finished or stopped run must not leave the flag set for the next request the app makes
     invalidate(); save("catalog"); save("providers");
   }
 }
@@ -638,7 +642,7 @@ function buildLibrary() {
     a.episodes = a.items.filter(i => i.type === "episode");
     const first = a.episodes[0] || a.items[0];
     a.thumb = first.th; a.latest = Math.max(...a.items.map(i => i.pub));
-    const ats = a.items.map(i => i.at).filter(t => t > 0); a.added = ats.length ? Math.min(...ats) : 0; // when this title first entered the catalog (0 = unknown, old export)
+    a.added = a.items.reduce((m, i) => Math.max(m, i.at || 0), 0); // when the newest video of this title was added to MyCorner (0 = unknown, old export)
     a.views = a.items.reduce((n, i) => n + i.vc, 0);
     a.seasons = [...new Set(a.items.map(i => i.season))].sort((x, y) => x - y);
     a.synopsis = (a.items.find(i => i.type === "episode" && i.d.length > 40)?.d || first.d || "")
@@ -933,6 +937,7 @@ function heartBtn(id) {
 }
 const provById = id => S.providers.find(p => p.id === id);
 const isNew = a => Date.now() - a.latest < 14 * 864e5;
+const isFresh = a => a.added ? Date.now() - a.added < 14 * 864e5 : isNew(a); // added to MyCorner within two weeks
 const epLabel = i => i.ep != null && i.type === "episode" ? `S${i.season} · E${i.ep}` : TYPE_LABEL[i.type];
 const playBtn = `<span class="play" aria-hidden="true"><span>${svg("play", 'width="18" height="18"')}</span></span>`;
 /* Small round provider logo on every card. Falls back to the provider's first letter when no logo is stored. */
@@ -947,12 +952,18 @@ function metaLine(a) {
     a.seasons.length > 1 ? `${a.seasons.length} seasons` : "", pubs.length ? new Date(Math.min(...pubs)).getFullYear() : ""]
     .filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("");
 }
-function animeCard(a) {
+const animeCard = a => cardHtml(a, ago(a.latest), isNew(a));
+/* Home-page rows about what is new on MyCorner show MyCorner's own add time, not the YouTube upload date. */
+const addedCard = a => {
+  const w = a.added ? ago(a.added) : "";
+  return cardHtml(a, !a.added ? ago(a.latest) : "added " + (/^(today|yesterday|\d+ days ago)$/.test(w) ? w : "on " + w), isFresh(a));
+};
+function cardHtml(a, when, fresh) {
   const n = a.episodes.length;
   return `<div class="card">${heartBtn(a.id)}<a href="#/anime/${encodeURIComponent(a.id)}" aria-label="${esc(a.title)}">
     <div class="thumb">${a.thumb ? `<img loading="lazy" src="${esc(a.thumb)}" alt="">` : ""}${logoChip(a)}${playBtn}</div>
-    ${isNew(a) ? '<div class="status">New</div>' : ""}
-    <h3>${esc(a.title)}</h3><div class="meta">${n ? `${n} episode${n > 1 ? "s" : ""}` : `${a.items.length} video${a.items.length > 1 ? "s" : ""}`} · ${ago(a.latest)}</div></a></div>`;
+    ${fresh ? '<div class="status">New</div>' : ""}
+    <h3>${esc(a.title)}</h3><div class="meta">${n ? `${n} episode${n > 1 ? "s" : ""}` : `${a.items.length} video${a.items.length > 1 ? "s" : ""}`} · ${when}</div></a></div>`;
 }
 /* One video as a card. h = saved playback position (or null), label = the small status line above the title. */
 function resumeCard({ item, anime }, h, label) {
@@ -1014,14 +1025,17 @@ function setupPanel() {
 function viewHome() {
   const all = enabledAnime();
   if (!all.length) return setupPanel() + FOOTER;
-  // Newest additions first: titles are ranked by the day they first entered the catalog, then by their latest upload.
-  // (Ranking by upload date alone hides a newly added provider whose videos are older than what is already there.)
-  const addedDay = a => a.added ? Math.floor(a.added / 864e5) : 0;
-  const fresh = [...all].sort((a, b) => addedDay(b) - addedDay(a) || b.latest - a.latest);
-  const feat = fresh.find(a => a.episodes.length > 1 && a.synopsis) || fresh[0];
+  // MyCorner's own order: whatever was added last comes first. A title counts from the moment its newest video (or playlist) was added.
+  // Titles added in the same sync run (stamps within 10 minutes of each other) are one group, ordered by upload date inside it.
+  const stamps = [...new Set(all.map(a => a.added).filter(Boolean))].sort((x, y) => y - x), runOf = new Map();
+  let runStart = 0, prevStamp = 0;
+  for (const t of stamps) { if (!prevStamp || prevStamp - t > 6e5) runStart = t; runOf.set(t, runStart); prevStamp = t; }
+  const run = a => runOf.get(a.added) || 0;
+  const fresh = [...all].sort((a, b) => run(b) - run(a) || b.latest - a.latest);
+  const feat = fresh[0];
   const start = feat.episodes.find(e => S.history[e.videoId]) || feat.episodes[0] || feat.items[0];
   const hero = `<section class="hero"><div class="bg" style="background-image:url('${esc(feat.thumb)}')"></div><div class="copy">
-    <span class="eyebrow">Now streaming${isNew(feat) ? '<span class="new-badge">New</span>' : ""}</span><h1>${esc(feat.title)}</h1>
+    <span class="eyebrow">Now streaming${isFresh(feat) ? '<span class="new-badge">New</span>' : ""}</span><h1>${esc(feat.title)}</h1>
     <div class="epline">${S.history[start.videoId] ? "Continue · " : ""}${esc(epLabel(start))} – ${esc(start.t)}</div>
     <p>${esc(feat.synopsis || "Now streaming on the official channel.")}</p><div class="meta-line">${metaLine(feat)}</div>
     <div class="btns"><a class="btn primary lg" href="#/watch/${esc(start.videoId)}">${svg("play", 'width="16" height="16"')} Play</a>
@@ -1036,7 +1050,7 @@ function viewHome() {
     return top.length ? `<section class="row"><div class="wrap"><div class="row-head"><h2>Popular on ${esc(p.name)}</h2><a href="#/providers/${esc(p.id)}">View All</a></div>${picks(top)}</div></section>` : "";
   }).join("");
   return hero + row("Continue Watching", keep) +
-    row("Recently Added", fresh.slice(0, 14).map(animeCard).join(""), `<a href="#/explore">View All</a>`) +
+    row("Recently Added", fresh.slice(0, 14).map(addedCard).join(""), `<a href="#/explore">View All</a>`) +
     row("Movies & Specials", extras, `<a href="#/explore">View All</a>`) + (spot ? banner(spot) : "") + perProvider +
     row("Your Watchlist", wl.slice(0, 14).map(animeCard).join(""), `<a href="#/watchlist">View All</a>`) + FOOTER;
 }
